@@ -1,8 +1,29 @@
+# OS / Editor
 .DS_Store
+.idea/
+.vscode/
+
+# Python
 __pycache__/
 *.pyc
-node_modules/
-dist/
-.env
-*.log
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 .venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Node (falls Tools genutzt werden)
+node_modules/
+
+# Laufzeit / Secrets
+.env
+.env.*
+!.env.example
+data/
+*.log
