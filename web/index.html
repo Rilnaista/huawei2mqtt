@@ -73,7 +73,7 @@
 
   <!-- ===== Uebersicht ===== -->
   <section id="view-overview" data-view="overview">
-    <div class="card hero">
+    <div class="card hero" id="hero">
       <div class="ring-wrap">
         <svg class="ring" viewBox="0 0 120 120" role="img" data-i18n-aria-label="ov.ring">
           <circle class="ring-bg" cx="60" cy="60" r="52" pathLength="100"/>
@@ -82,7 +82,7 @@
         <div class="ring-center">
           <span class="label" data-i18n="ov.power_now"></span>
           <span class="big"><span id="pw-num">–</span> <small id="pw-unit"></small></span>
-          <span class="sub" id="pw-util"></span>
+          <span class="sub"><strong id="pw-pct"></strong><span id="pw-of"></span></span>
         </div>
       </div>
       <div class="hero-side">
@@ -93,6 +93,7 @@
           <div class="kpi"><span class="label" data-i18n="ov.peak"></span><span class="kpi-v"><span data-bind="energy.peak_power_today_w" data-fmt="power">–</span></span></div>
         </div>
         <p class="age" id="age"></p>
+        <p class="hint" id="night-hint" hidden data-i18n="ov.night_hint"></p>
       </div>
     </div>
 
@@ -106,10 +107,12 @@
               <td data-bind="pv.pv1_voltage_v" data-unit="V" data-digits="0"></td>
               <td data-bind="pv.pv1_current_a" data-unit="A" data-digits="2"></td>
               <td data-bind="pv.pv1_power_w" data-fmt="power"></td></tr>
+            <tr class="barrow"><td colspan="4"><span class="bar" data-i18n-title="ov.share"><i id="bar-1"></i></span></td></tr>
             <tr><th scope="row"><span data-i18n="ov.string_n" data-n="2"></span></th>
               <td data-bind="pv.pv2_voltage_v" data-unit="V" data-digits="0"></td>
               <td data-bind="pv.pv2_current_a" data-unit="A" data-digits="2"></td>
               <td data-bind="pv.pv2_power_w" data-fmt="power"></td></tr>
+            <tr class="barrow"><td colspan="4"><span class="bar" data-i18n-title="ov.share"><i id="bar-2"></i></span></td></tr>
           </tbody>
         </table>
       </article>
@@ -194,7 +197,7 @@
       <article class="card wide" id="ctl-card">
         <h2><svg class="ico"><use href="#i-bolt"/></svg><span data-i18n="ctl.title"></span></h2>
         <div id="ctl-notice" class="notice" hidden></div>
-        <p class="line"><strong id="ctl-current"></strong></p>
+        <div class="stats" id="ctl-current"></div>
 
         <div id="ctl-body" hidden>
           <div class="ctl-block">
@@ -203,15 +206,19 @@
             <div class="ctl-row">
               <label for="lim-pct-num" data-i18n="ctl.limit_pct"></label>
               <input type="range" id="lim-pct-range" min="0" max="100" step="1" data-i18n-aria-label="ctl.limit_pct">
-              <input type="number" id="lim-pct-num" min="0" max="100" step="0.1" inputmode="decimal">
-              <span class="unit">%</span>
-              <button type="button" class="btn primary" id="lim-pct-apply" data-i18n="ctl.apply"></button>
+              <div class="ctl-input">
+                <input type="number" id="lim-pct-num" min="0" max="100" step="0.1" inputmode="decimal">
+                <span class="unit">%</span>
+                <button type="button" class="btn primary" id="lim-pct-apply" data-i18n="ctl.apply"></button>
+              </div>
             </div>
             <div class="ctl-row">
               <label for="lim-w-num" data-i18n="ctl.limit_w"></label>
-              <input type="number" id="lim-w-num" min="0" step="1" inputmode="numeric">
-              <span class="unit">W</span>
-              <button type="button" class="btn primary" id="lim-w-apply" data-i18n="ctl.apply"></button>
+              <div class="ctl-input">
+                <input type="number" id="lim-w-num" min="0" step="1" inputmode="numeric">
+                <span class="unit">W</span>
+                <button type="button" class="btn primary" id="lim-w-apply" data-i18n="ctl.apply"></button>
+              </div>
             </div>
           </div>
 

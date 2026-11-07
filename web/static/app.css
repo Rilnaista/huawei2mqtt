@@ -112,10 +112,15 @@ main { max-width: 1100px; margin: 0 auto; padding: 1rem 1.25rem 3rem; outline: n
 .ring circle { fill: none; stroke-width: 9; }
 .ring-bg { stroke: var(--idle-bg); }
 .ring-fg { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .8s ease; }
-.ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 2.2rem; }
+.ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 2.6rem; }
 .big { font-size: 2.9rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .big small { font-size: 1.1rem; font-weight: 600; color: var(--muted); letter-spacing: 0; }
-.sub { color: var(--muted); font-size: .8rem; margin-top: .2rem; }
+.sub { color: var(--muted); font-size: .78rem; margin-top: .35rem; display: flex; flex-direction: column; align-items: center; line-height: 1.25; max-width: 100%; }
+.sub strong { color: var(--text); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.sub span, .big { white-space: nowrap; }
+.hint { margin: 0; color: var(--muted); font-size: .85rem; }
+.is-night .ring-fg { stroke: var(--idle); opacity: .5; }
+.is-night { background-image: linear-gradient(135deg, color-mix(in srgb, var(--idle-bg) 55%, transparent), transparent 60%); }
 .hero-side { display: flex; flex-direction: column; gap: 1.1rem; min-width: 0; }
 .state-pill { display: inline-flex; align-self: flex-start; align-items: center; gap: .55rem; padding: .5rem 1rem; border-radius: 999px; font-weight: 600; font-size: 1.05rem; }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; }
@@ -129,11 +134,13 @@ main { max-width: 1100px; margin: 0 auto; padding: 1rem 1.25rem 3rem; outline: n
   .ring-wrap { width: min(260px, 78vw); height: min(260px, 78vw); }
   .hero-side { width: 100%; align-items: center; }
   .state-pill { align-self: center; }
-  .kpis { width: 100%; }
+  .kpis { width: 100%; grid-template-columns: 1fr 1fr; }
+  .kpi:nth-child(3) { grid-column: 1 / -1; flex-direction: row; align-items: baseline; justify-content: space-between; gap: .75rem; }
   .big { font-size: 2.5rem; }
   .kpi-v { font-size: 1.3rem; }
 }
 @media (max-width: 520px) { .brand-text { display: none; } }
+@media (max-width: 380px) { .ring-center { padding: 0 2.1rem; } .big { font-size: 2.2rem; } }
 
 /* ---- Tonfarben ---- */
 .tone-ok { color: var(--ok); }
@@ -146,6 +153,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 1rem 1.25rem 3rem; outline: n
 .state-pill.tone-idle { background: var(--idle-bg); }
 
 .is-stale .big, .is-stale .kpi-v, .is-stale .mini td { opacity: .55; }
+.is-stale .state-pill { opacity: .6; filter: grayscale(.6); }
 .is-stale .ring-fg { stroke: var(--idle); }
 
 .banner { padding: .8rem 1.1rem; border-radius: 14px; margin-bottom: 1rem; font-weight: 500; border: 1px solid currentColor; }
@@ -163,6 +171,14 @@ table { border-collapse: collapse; width: 100%; }
 .data th, .data td { padding: .5rem .75rem; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .data thead th { position: sticky; top: 0; background: var(--card-2); font-size: .8rem; color: var(--muted); font-weight: 600; }
 .data tbody tr:hover { background: var(--card-2); }
+.barrow td { padding: 0 .4rem .5rem; border-bottom: 1px solid var(--line); text-align: left; }
+.mini tbody .barrow:last-child td { border-bottom: 0; padding-bottom: 0; }
+.mini tbody tr:has(+ .barrow) > * { border-bottom: 0; }
+.bar { display: block; height: 6px; border-radius: 99px; background: var(--idle-bg); overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .8s ease; }
+.data td.nm { white-space: normal; min-width: 14rem; }
+.data td.nm span, .data td.nm code { display: block; }
+.data td.nm code { font: .75rem/1.3 var(--mono); color: var(--muted); }
 .num { text-align: right !important; font-variant-numeric: tabular-nums; }
 
 /* ---- Ampeln ---- */
@@ -208,14 +224,32 @@ label.check { cursor: pointer; }
 .notice { background: var(--warn-bg); color: var(--text); border-left: 4px solid var(--accent); padding: .8rem 1rem; border-radius: 10px; margin-bottom: .8rem; }
 .ctl-block { padding: 1rem 0; border-top: 1px solid var(--line); }
 .ctl-block p { margin: 0 0 .6rem; font-size: .9rem; }
-.ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: .5rem 0; }
+.stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .9rem; margin: 0 0 .4rem; }
+.stat { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stat.soft { font-weight: 500; color: var(--muted); font-size: 1.1rem; }
+.ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin: .7rem 0; }
+.ctl-input { display: flex; align-items: center; gap: .5rem; }
 .ctl-row label { flex: 1 1 100%; font-weight: 500; font-size: .9rem; }
 .ctl-row input[type="number"] { width: 7.5rem; }
 .unit { color: var(--muted); }
 
 .kv { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: .45rem 1.5rem; margin: 0; }
 .kv dt { color: var(--muted); }
-.kv dd { margin: 0; font-weight: 500; overflow-wrap: anywhere; }
+.kv dd { margin: 0; font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+.kv dd.mono { font-weight: 400; font-size: .85rem; }
+@media (max-width: 700px) {
+  .stats .label { flex: 1 1 100%; }
+  .kv { grid-template-columns: 1fr; gap: 0; }
+  .kv dt { font-size: .8rem; margin-top: .6rem; }
+  .field, .field.check { grid-template-columns: 1fr; }
+  .field small { grid-column: 1; }
+  .field input[type="text"], .field input[type="number"], .field select { width: 100%; }
+  .field.check { grid-template-columns: 1fr auto; }
+  .ctl-row input[type="range"] { flex: 1 1 100%; }
+  .ctl-input { flex: 1 1 100%; }
+  .ctl-input input[type="number"] { flex: 1 1 0; width: auto; min-width: 0; }
+  .ctl-input .btn { min-width: 8.5rem; }
+}
 .pill { display: inline-block; justify-self: start; padding: 0 .65rem; border-radius: 999px; font-size: .85rem; }
 .pill.ok { background: var(--ok-bg); color: var(--ok); }
 .pill.idle { background: var(--idle-bg); color: var(--idle); }

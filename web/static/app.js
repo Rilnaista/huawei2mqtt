@@ -166,16 +166,28 @@ function renderOverview() {
   $('pw-unit').textContent = p.unit;
   const pct = w != null && max ? Math.min(100, Math.max(0, (w / max) * 100)) : 0;
   $('ring-fg').setAttribute('stroke-dasharray', `${pct.toFixed(1)} 100`);
+  $('ring-fg').style.visibility = pct < 0.4 ? 'hidden' : '';
   if (w != null && max) {
     const m = power(max);
-    $('pw-util').textContent = t('ov.utilization', { pct: num(pct, 0) + ' %', max: m.num + ' ' + m.unit });
-  } else $('pw-util').textContent = '';
+    $('pw-pct').textContent = num(pct, 0) + '\u00a0%';
+    $('pw-of').textContent = t('ov.utilization', { max: m.num + '\u00a0' + m.unit });
+  } else { $('pw-pct').textContent = ''; $('pw-of').textContent = ''; }
+  const inp = v.pv?.input_power_w;
+  [1, 2].forEach((n) => {
+    const pw = v.pv?.[`pv${n}_power_w`];
+    const share = pw != null && inp > 0 ? Math.min(100, (pw / inp) * 100) : 0;
+    const bar = $('bar-' + n);
+    bar.style.width = share.toFixed(1) + '%';
+    bar.parentElement.title = t('ov.share') + ': ' + num(share, 0) + ' %';
+  });
 
   const key = v.inverter?.status;
   const tone = statusTone(key);
   $('state-pill').className = 'state-pill tone-' + tone;
   $('state-pill').querySelector('use').setAttribute('href', tone === 'ok' ? '#i-bolt' : tone === 'idle' ? '#i-sun' : '#i-alert');
   $('state-text').textContent = v.inverter ? statusText(key) : t('status.none');
+  $('hero').classList.toggle('is-night', !!key && key.startsWith('standby'));
+  $('night-hint').hidden = !(key && key === 'standby_no_irradiation');
 
   const alarms = v.inverter?.alarms;
   $('alarms').textContent = Array.isArray(alarms) && alarms.length ? alarms.map(humanize).join(', ') : v.inverter ? t('ov.no_alarms') : '–';
@@ -189,6 +201,8 @@ function renderOverview() {
 
 // ---------- Rendering: Alle Werte ----------
 let valBuilt = false;
+// registers[].name ist der Feld-Key (z. B. pv1_voltage_v); Klartext kommt aus i18n (field.<key>).
+const fieldName = (key) => tryT('field.' + key, humanize(key));
 const numAuto = (n) => new Intl.NumberFormat(lang, { maximumFractionDigits: 3 }).format(n);
 function renderValues() {
   const regs = S.values?.registers || [];
@@ -206,11 +220,11 @@ function renderValues() {
   const q = $('val-filter').value.trim().toLowerCase();
   const g = sel.value;
   const rows = regs.filter((r) => (!g || r.group === g)
-    && (!q || String(r.name).toLowerCase().includes(q) || String(r.address).includes(q)));
+    && (!q || String(r.name).toLowerCase().includes(q) || fieldName(r.name).toLowerCase().includes(q) || String(r.address).includes(q)));
   const frag = document.createDocumentFragment();
   for (const r of rows) {
     frag.append(h('tr', {},
-      h('td', {}, r.name), h('td', { class: 'num mono' }, String(r.address)),
+      h('td', { class: 'nm' }, h('span', {}, fieldName(r.name)), h('code', {}, r.name)), h('td', { class: 'num mono' }, String(r.address)),
       h('td', { class: 'num mono' }, r.raw == null ? '–' : String(r.raw)),
       h('td', { class: 'num' }, r.value == null ? '–' : typeof r.value === 'number' ? numAuto(r.value) : String(r.value)),
       h('td', {}, r.unit || ''),
@@ -264,9 +278,10 @@ function renderControl() {
   const sig = [passwordSet(), loggedIn(), !!st.shutdown_allowed, lang].join('|');
   const c = S.values?.control;
   const cur = $('ctl-current');
-  cur.textContent = c ? t('ctl.current', {
-    pct: c.power_limit_pct == null ? '–' : num(c.power_limit_pct, 1) + ' %',
-    w: c.power_limit_w == null ? '–' : num(c.power_limit_w, 0) + ' W' }) : '';
+  cur.replaceChildren(...(c ? [
+    h('span', { class: 'label' }, t('ctl.current')),
+    h('span', { class: 'stat' }, c.power_limit_pct == null ? '–' : num(c.power_limit_pct, 1) + '\u00a0%'),
+    h('span', { class: 'stat soft' }, c.power_limit_w == null ? '–' : num(c.power_limit_w, 0) + '\u00a0W')] : []));
   const max = S.values?.device?.max_power_w;
   if (max) $('lim-w-num').max = max;
   // Eingabefelder nur mit aktuellen Werten fuellen, solange der Nutzer nichts getippt hat
@@ -344,8 +359,10 @@ function renderSettings() {
       const name = secret ? k.slice(0, -4) : k;
       const text = secret ? (v ? t('set.secret_set') : t('set.secret_unset'))
         : typeof v === 'boolean' ? (v ? t('common.yes') : t('common.no')) : (v === '' || v == null ? '–' : String(v));
+      const mono = !secret && typeof v === 'string' && /[\/.]/.test(v);
+      const body = mono ? text.split(/(?<=[\/.])/).flatMap((p, i) => (i ? [document.createElement('wbr'), p] : [p])) : [text];
       return [h('dt', {}, tryT('field.' + name, name)),
-        h('dd', { class: secret ? (v ? 'pill ok' : 'pill idle') : '' }, text)];
+        h('dd', { class: secret ? (v ? 'pill ok' : 'pill idle') : mono ? 'mono' : '' }, ...body)];
     }));
   }
 }

@@ -46,6 +46,8 @@ def iso(ts):
 
 def sun_factor():
     """Tageskurve 0..1 (Maximum gegen 13 Uhr lokaler Zeit), leicht wolkig."""
+    if CFG.get("night"):
+        return 0.0
     now = datetime.now()
     h = now.hour + now.minute / 60 if CFG["real_time"] else 12.0 + 1.5 * math.sin(time.time() / 300)
     base = max(0.0, math.sin((h - 6.5) / 13 * math.pi)) if 6.5 < h < 19.5 else 0.0
@@ -91,29 +93,38 @@ def snapshot():
 
 
 def registers(v):
-    rows = []
-    spec = [
-        (32016, "PV1 voltage", "pv", "pv1_voltage_v", "V", 10), (32017, "PV1 current", "pv", "pv1_current_a", "A", 100),
-        (32018, "PV2 voltage", "pv", "pv2_voltage_v", "V", 10), (32019, "PV2 current", "pv", "pv2_current_a", "A", 100),
-        (32064, "Input power", "pv", "input_power_w", "W", 1),
-        (32080, "Active power", "grid", "active_power_w", "W", 1), (32085, "Grid frequency", "grid", "frequency_hz", "Hz", 100),
-        (32069, "Phase A voltage", "grid", "voltage_l1_v", "V", 10), (32070, "Phase B voltage", "grid", "voltage_l2_v", "V", 10),
-        (32071, "Phase C voltage", "grid", "voltage_l3_v", "V", 10),
-        (32114, "Daily energy yield", "energy", "daily_yield_kwh", "kWh", 100),
-        (32106, "Accumulated energy yield", "energy", "total_yield_kwh", "kWh", 100),
-        (32078, "Peak active power of current day", "energy", "peak_power_today_w", "W", 1),
-        (32087, "Internal temperature", "inverter", "internal_temperature_c", "°C", 10),
-        (32086, "Efficiency", "inverter", "efficiency_pct", "%", 100),
-        (32089, "Device status", "inverter", "status_code", "", 1),
-        (30000, "Model", "device", "model", "", None), (30015, "Serial number", "device", "serial_number", "", None),
-        (30073, "Rated power", "device", "rated_power_w", "W", 1),
-        (40125, "Active power derating (percent)", "control", "power_limit_pct", "%", 10),
-        (40126, "Active power derating (watt)", "control", "power_limit_w", "W", 1),
+    """Wie die echte API: name = Feld-Key (z. B. pv1_voltage_v); Klartext liefert das Portal per i18n."""
+    spec = [  # (Adresse, Gruppe, Feld, Einheit, Gain)
+        (32016, "pv", "pv1_voltage_v", "V", 10), (32017, "pv", "pv1_current_a", "A", 100),
+        (32018, "pv", "pv2_voltage_v", "V", 10), (32019, "pv", "pv2_current_a", "A", 100),
+        (32064, "pv", "input_power_w", "W", 1),
+        (32080, "grid", "active_power_w", "W", 1), (32082, "grid", "reactive_power_var", "var", 1),
+        (32084, "grid", "power_factor", "", 1000), (32085, "grid", "frequency_hz", "Hz", 100),
+        (32066, "grid", "voltage_l1_l2_v", "V", 10), (32067, "grid", "voltage_l2_l3_v", "V", 10),
+        (32068, "grid", "voltage_l3_l1_v", "V", 10),
+        (32069, "grid", "voltage_l1_v", "V", 10), (32070, "grid", "voltage_l2_v", "V", 10),
+        (32071, "grid", "voltage_l3_v", "V", 10),
+        (32072, "grid", "current_l1_a", "A", 1000), (32074, "grid", "current_l2_a", "A", 1000),
+        (32076, "grid", "current_l3_a", "A", 1000),
+        (32114, "energy", "daily_yield_kwh", "kWh", 100), (32106, "energy", "total_yield_kwh", "kWh", 100),
+        (32078, "energy", "peak_power_today_w", "W", 1),
+        (32089, "inverter", "status_code", "", 1), (32086, "inverter", "efficiency_pct", "%", 100),
+        (32087, "inverter", "internal_temperature_c", "°C", 10),
+        (32088, "inverter", "insulation_resistance_mohm", "MΩ", 1000), (32090, "inverter", "fault_code", "", 1),
+        (32000, "inverter", "state_1", "", 1), (32001, "inverter", "state_2", "", 1), (32002, "inverter", "state_3", "", 1),
+        (32008, "inverter", "alarm_1", "", 1), (32009, "inverter", "alarm_2", "", 1), (32010, "inverter", "alarm_3", "", 1),
+        (30000, "device", "model", "", None), (30015, "device", "serial_number", "", None),
+        (30025, "device", "part_number", "", None), (30035, "device", "software_version", "", None),
+        (31025, "device", "firmware_version", "", None), (30070, "device", "model_id", "", 1),
+        (30071, "device", "pv_strings", "", 1), (30072, "device", "mppt_count", "", 1),
+        (30073, "device", "rated_power_w", "W", 1), (30075, "device", "max_power_w", "W", 1),
+        (40125, "control", "power_limit_pct", "%", 10), (40126, "control", "power_limit_w", "W", 1),
     ]
-    for addr, name, grp, field, unit, gain in spec:
+    rows = []
+    for addr, grp, field, unit, gain in spec:
         val = v[grp][field]
         raw = val if gain is None else round(val * gain)
-        rows.append({"address": addr, "name": name, "raw": raw, "value": val, "unit": unit, "group": grp})
+        rows.append({"address": addr, "name": field, "raw": raw, "value": val, "unit": unit, "group": grp})
     return rows
 
 
@@ -299,9 +310,10 @@ def main():
     ap.add_argument("--no-password", action="store_true")
     ap.add_argument("--state", choices=["online", "stale", "offline"], default="online")
     ap.add_argument("--shutdown-allowed", action="store_true")
+    ap.add_argument("--night", action="store_true", help="Nacht: 0 W, Status standby_no_irradiation")
     ap.add_argument("--real-time", action="store_true", help="Tageskurve nach echter Uhrzeit (nachts 0 W)")
     a = ap.parse_args()
-    CFG.update(password="" if a.no_password else a.password, state=a.state, shutdown=a.shutdown_allowed, real_time=a.real_time)
+    CFG.update(password="" if a.no_password else a.password, state=a.state, shutdown=a.shutdown_allowed, real_time=a.real_time, night=a.night)
     start = time.time() - 120
     for i, (lv, lg, m) in enumerate([
         ("INFO", "bridge", "huawei2mqtt 0.1.0-mock gestartet"), ("INFO", "modbus", "Verbunden mit 192.168.1.45:502"),
