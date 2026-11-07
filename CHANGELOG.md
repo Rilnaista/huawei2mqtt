@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0-rc1] - 2026-11-07
 
 ### Added
 - Modbus TCP bridge for Huawei SUN2000 inverters (tested: SUN2000-10KTL-M1 via SDongleA).
