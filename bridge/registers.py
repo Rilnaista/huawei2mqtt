@@ -6,7 +6,7 @@ Group payload order is given by GROUP_FIELDS (fields are register fields or DERI
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Callable
 
 from . import codes
@@ -88,6 +88,7 @@ REGISTERS: list[Reg] = [
     R(32088, "insulation_resistance_mohm", "inverter", "U16", gain=1000, unit="MΩ", decimals=3),
     R(32089, "status_code", "inverter", "U16"),
     R(32090, "fault_code", "inverter", "U16"),
+    # NOTE: Huawei EPOCH registers hold LOCAL wall-clock time (device time zone), not UTC.
     R(32091, "startup_time", "inverter", "EPOCH"),
     R(32093, "shutdown_time", "inverter", "EPOCH"),
     # device (static)
@@ -97,6 +98,8 @@ REGISTERS: list[Reg] = [
     R(30035, "software_version", "device", "STR", STATIC, length=15),
     R(31025, "firmware_version", "device", "STR", STATIC, length=15),
     R(30070, "model_id", "device", "U16", STATIC),
+    # internal only (no group payload / contract field): device time zone offset, minutes
+    R(43006, "timezone_offset_min", "internal", "I16", STATIC),
     R(30071, "pv_strings", "device", "U16", STATIC),
     R(30072, "mppt_count", "device", "U16", STATIC),
     R(30073, "rated_power_w", "device", "U32", STATIC, unit="W"),
@@ -151,8 +154,26 @@ GROUP_CLASS = {"pv": LIVE, "grid": LIVE, "energy": LIVE, "inverter": LIVE,
 
 
 # --- decoding -------------------------------------------------------------------
-def decode(reg: Reg, words: list[int]) -> tuple[Any, Any]:
-    """Return (raw, value). value is None for invalid markers."""
+def local_tz(name: str) -> tzinfo | None:
+    """Resolve an IANA zone name (None if invalid / no tz database)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - ZoneInfoNotFoundError, ValueError, ...
+        return None
+
+
+def epoch_to_utc_iso(raw: int, tz: tzinfo | None) -> str:
+    """Huawei epoch = seconds of LOCAL wall-clock time since 1970 -> UTC ISO-8601."""
+    local = (datetime(1970, 1, 1) + timedelta(seconds=raw)).replace(tzinfo=tz or timezone.utc)
+    return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def decode(reg: Reg, words: list[int], tz: tzinfo | None = None) -> tuple[Any, Any]:
+    """Return (raw, value). value is None for invalid markers.
+
+    ``tz``: zone in which EPOCH registers (device local time) are interpreted.
+    """
     if reg.typ == "STR":
         data = b"".join(w.to_bytes(2, "big") for w in words[: reg.words])
         text = data.split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
@@ -166,7 +187,7 @@ def decode(reg: Reg, words: list[int]) -> tuple[Any, Any]:
     if reg.typ == "EPOCH":
         if raw in (0, 0xFFFFFFFF):
             return raw, None
-        return raw, datetime.fromtimestamp(raw, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return raw, epoch_to_utc_iso(raw, tz)
     signed = reg.typ.startswith("I")
     if signed and raw >= 1 << (bits - 1):
         raw -= 1 << bits

@@ -10,7 +10,7 @@ def test_fields_unique_and_all_in_groups():
     assert len({r.field for r in rg.REGISTERS}) == len(rg.REGISTERS)
     listed = {f for fields in rg.GROUP_FIELDS.values() for f in fields}
     for r in rg.REGISTERS:
-        assert r.field in listed
+        assert r.field in listed or r.group == "internal"  # internal: never published
     for f in listed:
         assert f in rg.BY_FIELD or f in rg.DERIVED
 
@@ -83,3 +83,29 @@ def test_alarm_decoding():
     assert codes.decode_alarms({1: 0x0080, 2: 0x0004, 3: None}) == \
         ["grid_loss", "low_insulation_resistance"]
     assert codes.decode_alarms({1: None, 2: None, 3: None}) is None
+
+
+def test_epoch_is_local_time_winter_and_summer():
+    from datetime import datetime
+    ber = rg.local_tz("Europe/Berlin")
+
+    def words(local):  # wall clock as "epoch" seconds
+        n = int((datetime.fromisoformat(local) - datetime(1970, 1, 1)).total_seconds())
+        return [n >> 16, n & 0xFFFF]
+    r = reg("startup_time")
+    assert rg.decode(r, words("2026-01-15T10:00:00"), ber)[1] == "2026-01-15T09:00:00Z"  # CET +1
+    assert rg.decode(r, words("2026-07-15T10:00:00"), ber)[1] == "2026-07-15T08:00:00Z"  # CEST +2
+
+
+def test_epoch_fallback_to_device_offset_when_tz_invalid():
+    from datetime import datetime
+    from bridge.cache import Cache
+    assert rg.local_tz("Nowhere/Invalid") is None
+    c = Cache(tz_name="Nowhere/Invalid")
+    n = int((datetime(2026, 1, 15, 10) - datetime(1970, 1, 1)).total_seconds())
+    blk = rg.Block(43006, 1, (rg.BY_FIELD["timezone_offset_min"],))
+    c.update_block(blk, [60])
+    assert c.value("timezone_offset_min") == 60
+    blk2 = rg.Block(32091, 2, (reg("startup_time"),))
+    c.update_block(blk2, [n >> 16, n & 0xFFFF])
+    assert c.value("startup_time") == "2026-01-15T09:00:00Z"

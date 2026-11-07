@@ -130,8 +130,12 @@ class MqttService:
                 await asyncio.gather(*tasks, return_exceptions=True)
             if self._stop.is_set() or self._reconnect.is_set():
                 # clean disconnect does not fire the LWT: say goodbye explicitly
+                # base topic changed (e.g. unknown -> real serial): clear the old retained
+                # availability instead of leaving "offline" behind (empty retained = delete)
+                moved = self.rt.availability_topic != avail
                 try:
-                    await asyncio.wait_for(client.publish(avail, "offline", qos=1, retain=True), 3)
+                    await asyncio.wait_for(
+                        client.publish(avail, "" if moved else "offline", qos=1, retain=True), 3)
                 except Exception as exc:  # noqa: BLE001
                     log.debug("could not publish offline: %s", exc)
             for t in done:

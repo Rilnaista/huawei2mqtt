@@ -17,6 +17,7 @@ Runtime dependencies (requirements.txt):
 | propcache (transitive) | 0.5.4 | Apache-2.0 |
 | typing_extensions (transitive) | 4.16.0 | PSF-2.0 |
 | yarl (transitive) | 1.25.1 | Apache-2.0 |
+| tzdata (time zone database for zoneinfo) | 2026.6 | Apache-2.0 |
 
 Development / tests only (requirements-dev.txt, not shipped):
 

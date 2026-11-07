@@ -78,7 +78,25 @@ async def test_serial_learned_reconnects_with_new_lwt(cfg, rt):
     assert first.will[0] == "huawei/unknown/availability"
     rt.set_serial("SN9")
     await wait_for(lambda: len(FakeMqttClient.instances) == 2 and rt.mqtt_connected)
-    assert ("huawei/unknown/availability", "offline", 1, True) in first.published
+    assert ("huawei/unknown/availability", "", 1, True) in first.published
     assert FakeMqttClient.instances[1].will[0] == "huawei/SN9/availability"
+    svc.stop()
+    await asyncio.wait_for(task, 3)
+
+
+async def test_old_unknown_availability_cleared_after_serial_learned(cfg, rt):
+    svc = MqttService(cfg, rt, None, lambda b: [], None, factory())
+    task = asyncio.create_task(svc.run())
+    await wait_for(lambda: FakeMqttClient.instances and rt.mqtt_connected)
+    c = FakeMqttClient.instances[0]
+    assert c.will[0] == "huawei/unknown/availability"
+    rt.set_serial("SN9")
+    svc.request_reconnect()
+    await wait_for(lambda: len(FakeMqttClient.instances) == 2 and rt.mqtt_connected)
+    assert ("huawei/unknown/availability", "", 1, True) in c.published
+    assert ("huawei/unknown/availability", "offline", 1, True) not in c.published
+    c2 = FakeMqttClient.instances[1]
+    assert c2.will == ("huawei/SN9/availability", "offline")
+    assert ("huawei/SN9/availability", "online", 1, True) in c2.published
     svc.stop()
     await asyncio.wait_for(task, 3)

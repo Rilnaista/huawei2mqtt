@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 from datetime import datetime, timezone
 from typing import Any
@@ -31,7 +32,8 @@ class App:
         self.cfg = cfg
         self.persist = Persistence(cfg.data_dir)
         self.rt = Runtime(cfg, self.persist)
-        self.cache = Cache(context=lambda: {"allow_shutdown": cfg.allow_shutdown})
+        self.cache = Cache(context=lambda: {"allow_shutdown": cfg.allow_shutdown},
+                           tz_name=os.environ.get("TZ") or "Europe/Berlin")
         self.device = device or ModbusDevice(cfg.huawei_host, cfg.huawei_port, cfg.huawei_unit_id,
                                              cfg.modbus_timeout, cfg.modbus_request_delay_ms)
         kw = {"client_factory": mqtt_factory} if mqtt_factory else {}
