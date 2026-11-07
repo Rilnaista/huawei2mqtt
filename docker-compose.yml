@@ -1,0 +1,21 @@
+services:
+  huawei2mqtt:
+    image: ghcr.io/rilnaista/huawei2mqtt:latest
+    # build: .
+    container_name: huawei2mqtt
+    env_file: .env
+    ports:
+      - "${PORTAL_PORT:-8080}:8080"
+    volumes:
+      - huawei2mqtt-data:/data
+    restart: unless-stopped
+    mem_limit: 128m
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  huawei2mqtt-data:

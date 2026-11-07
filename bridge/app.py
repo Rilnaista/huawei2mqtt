@@ -115,7 +115,7 @@ class App:
         tasks[2].cancel()
         for t in tasks[:2]:
             try:
-                await asyncio.wait_for(t, 8)
+                await asyncio.wait_for(t, 4)
             except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
                 t.cancel()
         await self.device.close()

@@ -32,3 +32,8 @@ Runtime: Python 3.12 (PSF License).
   and alarm bits (facts about the device interface). Text keys in `bridge/codes.py` are our own.
 - huawei-solar-lib (wlcrs/huawei-solar-lib, AGPL-3.0): consulted read-only to cross-check
   register addresses and code tables. It is NOT a dependency and no code or table text was copied.
+
+## Container base image
+| Component | Version | License |
+|---|---|---|
+| python:3.12-alpine (Docker official image) | 3.12 | Python: PSF-2.0; Alpine Linux userland: MIT/GPL/others per package (not modified) |

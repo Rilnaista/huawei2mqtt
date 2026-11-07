@@ -110,7 +110,7 @@ class Runtime:
         self.cfg, self.persist, self.clock = cfg, persist, clock
         self.started = datetime.now(timezone.utc)
         self._t0 = clock()
-        self.version = __version__
+        self.version = os.environ.get("BRIDGE_VERSION", "").strip() or __version__
         # inverter
         self.last_success: float | None = None
         self.last_success_iso: str | None = None
