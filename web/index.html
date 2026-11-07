@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f59e0b">
+<title>huawei2mqtt</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<!-- Icons (eigene, Inline-SVG) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><path d="M12 2.5l-6 19M12 2.5l6 19M8.2 14.5h7.6M9.6 9.5h4.8M4 7h16M6 11.5h12"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2.5L5 13.5h6l-1 8 8-11h-6l1-8z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 11L12 3.5 20.5 11M6 9.5V20h12V9.5M10 20v-5.5h4V20"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8.5 6.5H20M8.5 12H20M8.5 17.5H20"/><circle cx="4.5" cy="6.5" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17.5" r="1"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7 9.5l3 2.5-3 2.5M12.5 15h4.5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8l1.3 2.4 2.7-.5 1 2.6 2.6 1-.5 2.7 2.4 1.3-2.4 1.3.5 2.7-2.6 1-1 2.6-2.7-.5L12 21.2l-1.3-2.4-2.7.5-1-2.6-2.6-1 .5-2.7L2.5 12l2.4-1.3-.5-2.7 2.6-1 1-2.6 2.7.5z"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6.5 8h11v3.5a5.5 5.5 0 01-11 0zM12 17v4"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5a4.5 4.5 0 01-.6-8.96A6 6 0 0117.9 8.9 4.8 4.8 0 0117 18.5z"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20l1-4.2L16.6 4.2a2 2 0 012.8 0l.4.4a2 2 0 010 2.8L8.2 19zM14.5 6.3l3.2 3.2"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V8a4 4 0 018 0v2.5"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.6"/><path d="M4.8 20c.8-3.6 3.7-5.5 7.2-5.5s6.4 1.9 7.2 5.5"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8.5M6.9 6.6a7.5 7.5 0 1010.2 0"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5l9.5 16.5h-19zM12 10v4.5M12 17.4v.1"/></symbol>
+  <symbol id="i-temp" viewBox="0 0 24 24"><path d="M10 14.5V5a2 2 0 014 0v9.5a4 4 0 11-4 0z"/></symbol>
+</svg>
+
+<a class="skip" href="#main" data-i18n="a11y.skip"></a>
+
+<header class="top">
+  <div class="brand">
+    <span class="brand-mark"><svg class="ico"><use href="#i-sun"/></svg></span>
+    <div class="brand-text">
+      <strong>huawei2mqtt</strong>
+      <span data-i18n="app.title"></span>
+    </div>
+  </div>
+  <div class="top-actions">
+    <label class="lang">
+      <span class="sr-only" data-i18n="lang.label"></span>
+      <select id="lang">
+        <option value="de">Deutsch</option>
+        <option value="en">English</option>
+        <option value="nl">Nederlands</option>
+        <option value="fr">Français</option>
+        <option value="it">Italiano</option>
+        <option value="es">Español</option>
+        <option value="pl">Polski</option>
+      </select>
+    </label>
+    <button type="button" id="btn-auth" class="btn ghost" hidden>
+      <svg class="ico"><use href="#i-user"/></svg><span id="btn-auth-label"></span>
+    </button>
+  </div>
+</header>
+
+<nav class="tabs" data-i18n-aria-label="nav.main">
+  <a href="#overview" data-route="overview"><svg class="ico"><use href="#i-home"/></svg><span data-i18n="nav.overview"></span></a>
+  <a href="#values" data-route="values"><svg class="ico"><use href="#i-list"/></svg><span data-i18n="nav.values"></span></a>
+  <a href="#log" data-route="log"><svg class="ico"><use href="#i-log"/></svg><span data-i18n="nav.log"></span></a>
+  <a href="#settings" data-route="settings"><svg class="ico"><use href="#i-gear"/></svg><span data-i18n="nav.settings"></span></a>
+</nav>
+
+<main id="main" tabindex="-1">
+  <div id="banner" class="banner" role="status" hidden></div>
+
+  <!-- ===== Uebersicht ===== -->
+  <section id="view-overview" data-view="overview">
+    <div class="card hero">
+      <div class="ring-wrap">
+        <svg class="ring" viewBox="0 0 120 120" role="img" data-i18n-aria-label="ov.ring">
+          <circle class="ring-bg" cx="60" cy="60" r="52" pathLength="100"/>
+          <circle id="ring-fg" class="ring-fg" cx="60" cy="60" r="52" pathLength="100" stroke-dasharray="0 100"/>
+        </svg>
+        <div class="ring-center">
+          <span class="label" data-i18n="ov.power_now"></span>
+          <span class="big"><span id="pw-num">–</span> <small id="pw-unit"></small></span>
+          <span class="sub" id="pw-util"></span>
+        </div>
+      </div>
+      <div class="hero-side">
+        <div id="state-pill" class="state-pill tone-idle"><svg class="ico"><use href="#i-sun"/></svg><span id="state-text"></span></div>
+        <div class="kpis">
+          <div class="kpi"><span class="label" data-i18n="ov.today"></span><span class="kpi-v"><span data-bind="energy.daily_yield_kwh" data-digits="1">–</span> <small>kWh</small></span></div>
+          <div class="kpi"><span class="label" data-i18n="ov.total"></span><span class="kpi-v"><span data-bind="energy.total_yield_kwh" data-digits="0">–</span> <small>kWh</small></span></div>
+          <div class="kpi"><span class="label" data-i18n="ov.peak"></span><span class="kpi-v"><span data-bind="energy.peak_power_today_w" data-fmt="power">–</span></span></div>
+        </div>
+        <p class="age" id="age"></p>
+      </div>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h2><svg class="ico"><use href="#i-sun"/></svg><span data-i18n="ov.strings"></span></h2>
+        <table class="mini">
+          <thead><tr><th></th><th data-i18n="ov.voltage"></th><th data-i18n="ov.current"></th><th data-i18n="ov.power"></th></tr></thead>
+          <tbody>
+            <tr><th scope="row"><span data-i18n="ov.string_n" data-n="1"></span></th>
+              <td data-bind="pv.pv1_voltage_v" data-unit="V" data-digits="0"></td>
+              <td data-bind="pv.pv1_current_a" data-unit="A" data-digits="2"></td>
+              <td data-bind="pv.pv1_power_w" data-fmt="power"></td></tr>
+            <tr><th scope="row"><span data-i18n="ov.string_n" data-n="2"></span></th>
+              <td data-bind="pv.pv2_voltage_v" data-unit="V" data-digits="0"></td>
+              <td data-bind="pv.pv2_current_a" data-unit="A" data-digits="2"></td>
+              <td data-bind="pv.pv2_power_w" data-fmt="power"></td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="card">
+        <h2><svg class="ico"><use href="#i-grid"/></svg><span data-i18n="ov.grid"></span></h2>
+        <table class="mini">
+          <thead><tr><th></th><th data-i18n="ov.voltage"></th><th data-i18n="ov.current"></th></tr></thead>
+          <tbody>
+            <tr><th scope="row"><span data-i18n="ov.phase_n" data-n="1"></span></th><td data-bind="grid.voltage_l1_v" data-unit="V" data-digits="0"></td><td data-bind="grid.current_l1_a" data-unit="A" data-digits="2"></td></tr>
+            <tr><th scope="row"><span data-i18n="ov.phase_n" data-n="2"></span></th><td data-bind="grid.voltage_l2_v" data-unit="V" data-digits="0"></td><td data-bind="grid.current_l2_a" data-unit="A" data-digits="2"></td></tr>
+            <tr><th scope="row"><span data-i18n="ov.phase_n" data-n="3"></span></th><td data-bind="grid.voltage_l3_v" data-unit="V" data-digits="0"></td><td data-bind="grid.current_l3_a" data-unit="A" data-digits="2"></td></tr>
+          </tbody>
+        </table>
+        <p class="line"><span class="label" data-i18n="ov.frequency"></span><strong data-bind="grid.frequency_hz" data-unit="Hz" data-digits="2">–</strong></p>
+      </article>
+
+      <article class="card">
+        <h2><svg class="ico"><use href="#i-chip"/></svg><span data-i18n="ov.device"></span></h2>
+        <p class="line"><span class="label" data-i18n="ov.model"></span><strong data-bind="device.model" data-fmt="text">–</strong></p>
+        <p class="line"><span class="label" data-i18n="ov.efficiency"></span><strong data-bind="inverter.efficiency_pct" data-unit="%" data-digits="1">–</strong></p>
+        <p class="line"><span class="label" data-i18n="ov.temperature"></span><strong data-bind="inverter.internal_temperature_c" data-unit="°C" data-digits="1">–</strong></p>
+        <p class="line"><span class="label" data-i18n="ov.alarms"></span><strong id="alarms">–</strong></p>
+      </article>
+
+      <article class="card wide">
+        <h2><svg class="ico"><use href="#i-check"/></svg><span data-i18n="ov.health"></span></h2>
+        <ul class="lights" id="lights"></ul>
+      </article>
+    </div>
+  </section>
+
+  <!-- ===== Alle Werte ===== -->
+  <section id="view-values" data-view="values" hidden>
+    <div class="card">
+      <h2><svg class="ico"><use href="#i-list"/></svg><span data-i18n="val.title"></span></h2>
+      <div class="toolbar">
+        <input type="search" id="val-filter" data-i18n-placeholder="val.filter" data-i18n-aria-label="val.filter" autocomplete="off">
+        <select id="val-group" data-i18n-aria-label="val.group"></select>
+        <span class="muted" id="val-count"></span>
+      </div>
+      <div class="table-scroll">
+        <table class="data" id="val-table">
+          <thead><tr>
+            <th data-i18n="val.name"></th><th class="num" data-i18n="val.address"></th><th class="num" data-i18n="val.raw"></th>
+            <th class="num" data-i18n="val.value"></th><th data-i18n="val.unit"></th><th data-i18n="val.group"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted" id="val-empty" hidden data-i18n="val.empty"></p>
+    </div>
+  </section>
+
+  <!-- ===== Log ===== -->
+  <section id="view-log" data-view="log" hidden>
+    <div class="card">
+      <h2><svg class="ico"><use href="#i-log"/></svg><span data-i18n="log.title"></span></h2>
+      <div class="toolbar">
+        <label class="inline"><span data-i18n="log.level"></span>
+          <select id="log-level">
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO" selected>INFO</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+        </label>
+        <label class="inline check"><input type="checkbox" id="log-follow" checked><span data-i18n="log.autoscroll"></span></label>
+        <button type="button" class="btn ghost small" id="log-clear" data-i18n="log.clear"></button>
+        <span class="muted" id="log-count"></span>
+      </div>
+      <div class="logbox" id="log-box" tabindex="0" role="log" aria-live="off">
+        <p class="muted pad" id="log-empty" data-i18n="log.empty"></p>
+      </div>
+      <p class="muted small-text" data-i18n="log.hint"></p>
+    </div>
+  </section>
+
+  <!-- ===== Einstellungen & Bedienung ===== -->
+  <section id="view-settings" data-view="settings" hidden>
+    <div class="cards">
+      <article class="card wide" id="ctl-card">
+        <h2><svg class="ico"><use href="#i-bolt"/></svg><span data-i18n="ctl.title"></span></h2>
+        <div id="ctl-notice" class="notice" hidden></div>
+        <p class="line"><strong id="ctl-current"></strong></p>
+
+        <div id="ctl-body" hidden>
+          <div class="ctl-block">
+            <h3 data-i18n="ctl.limit_title"></h3>
+            <p class="muted" data-i18n="ctl.limit_help"></p>
+            <div class="ctl-row">
+              <label for="lim-pct-num" data-i18n="ctl.limit_pct"></label>
+              <input type="range" id="lim-pct-range" min="0" max="100" step="1" data-i18n-aria-label="ctl.limit_pct">
+              <input type="number" id="lim-pct-num" min="0" max="100" step="0.1" inputmode="decimal">
+              <span class="unit">%</span>
+              <button type="button" class="btn primary" id="lim-pct-apply" data-i18n="ctl.apply"></button>
+            </div>
+            <div class="ctl-row">
+              <label for="lim-w-num" data-i18n="ctl.limit_w"></label>
+              <input type="number" id="lim-w-num" min="0" step="1" inputmode="numeric">
+              <span class="unit">W</span>
+              <button type="button" class="btn primary" id="lim-w-apply" data-i18n="ctl.apply"></button>
+            </div>
+          </div>
+
+          <div class="ctl-block" id="power-block" hidden>
+            <h3 data-i18n="ctl.power_title"></h3>
+            <p class="muted" data-i18n="ctl.power_help"></p>
+            <div class="btn-row">
+              <button type="button" class="btn" id="btn-on"><svg class="ico"><use href="#i-power"/></svg><span data-i18n="ctl.on"></span></button>
+              <button type="button" class="btn danger" id="btn-off"><svg class="ico"><use href="#i-power"/></svg><span data-i18n="ctl.off"></span></button>
+            </div>
+          </div>
+
+          <div class="ctl-block">
+            <h3 data-i18n="ctl.write_title"></h3>
+            <p class="muted" data-i18n="ctl.write_help"></p>
+            <div class="btn-row">
+              <button type="button" class="btn" id="btn-write-test"><svg class="ico"><use href="#i-pen"/></svg><span data-i18n="ctl.write_test"></span></button>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card wide">
+        <h2><svg class="ico"><use href="#i-gear"/></svg><span data-i18n="set.editable"></span></h2>
+        <p class="muted" id="set-login-hint" hidden data-i18n="set.login_to_edit"></p>
+        <form id="set-form" novalidate></form>
+      </article>
+
+      <article class="card wide">
+        <h2><svg class="ico"><use href="#i-lock"/></svg><span data-i18n="set.readonly"></span></h2>
+        <p class="muted" data-i18n="set.readonly_hint"></p>
+        <dl class="kv" id="set-readonly"></dl>
+      </article>
+    </div>
+  </section>
+</main>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+<dialog id="dlg-login">
+  <form method="dialog" id="login-form">
+    <h2 data-i18n="login.title"></h2>
+    <p class="muted" data-i18n="login.intro"></p>
+    <label for="login-pw" data-i18n="login.password"></label>
+    <input type="password" id="login-pw" autocomplete="current-password" required>
+    <p class="field-error" id="login-error" role="alert" hidden></p>
+    <div class="btn-row end">
+      <button type="button" class="btn ghost" id="login-cancel" data-i18n="common.cancel"></button>
+      <button type="submit" class="btn primary" data-i18n="login.submit"></button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-confirm">
+  <form method="dialog">
+    <h2 data-i18n="ctl.confirm_title"></h2>
+    <p id="confirm-text"></p>
+    <div class="btn-row end">
+      <button type="submit" value="cancel" class="btn ghost" data-i18n="common.cancel"></button>
+      <button type="submit" value="ok" class="btn primary" id="confirm-ok" data-i18n="common.confirm"></button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
