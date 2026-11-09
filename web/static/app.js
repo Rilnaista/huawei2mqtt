@@ -1,62 +1,21 @@
 // huawei2mqtt Portal: schlankes Frontend ohne Framework. Alle Texte stammen aus web/i18n/*.json.
-import { detect, setLang, lang, t, has, applyDom, num, power, ago, time } from './i18n.js';
+import { detect, setLang, lang, t, has, applyDom, num, power, ago, time, hm } from './i18n.js';
+import { $, h, icon, api, tryT, humanize, fieldName, toast, fmt } from './common.js';
+import * as hist from './history.js';
+import * as awards from './awards.js';
 
 const POLL_MS = 5000;
 const LOG_MS = 2000;
 const LOG_MAX = 500;
 const LEVELS = { DEBUG: 10, INFO: 20, WARNING: 30, WARN: 30, ERROR: 40, CRITICAL: 50 };
-const $ = (id) => document.getElementById(id);
 
 const S = {
-  status: null, values: null, settings: null, down: false,
+  status: null, values: null, settings: null, down: false, clockOffset: 0, polling: false, fastAt: 0,
   logSeq: 0, logEntries: [], logStarted: null, ctlSig: null, setSig: null,
 };
 
-// ---------- kleine Helfer ----------
-function h(tag, attrs = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === false || v == null) continue;
-    if (k === 'class') el.className = v;
-    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const k of kids.flat()) if (k != null) el.append(k);
-  return el;
-}
-function icon(id) {
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('class', 'ico');
-  const use = document.createElementNS(ns, 'use');
-  use.setAttribute('href', '#' + id);
-  svg.append(use);
-  return svg;
-}
-async function api(method, path, body) {
-  let r;
-  try {
-    r = await fetch(path, {
-      method, credentials: 'same-origin', cache: 'no-store',
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  } catch { return { ok: false, status: 0, data: null }; }
-  let data = null;
-  try { data = await r.json(); } catch { /* leerer Body */ }
-  return { ok: r.ok, status: r.status, data };
-}
-const tryT = (key, fallback) => (has(key) ? t(key) : fallback);
-const humanize = (k) => String(k).replace(/_/g, ' ');
 const loggedIn = () => !!S.status?.auth?.logged_in;
 const passwordSet = () => !!S.status?.auth?.password_set;
-
-function toast(msg, tone = 'ok') {
-  const el = h('div', { class: 'toast tone-' + tone }, icon(tone === 'ok' ? 'i-check' : 'i-alert'), h('span', {}, msg));
-  el.addEventListener('click', () => el.remove());
-  $('toasts').append(el);
-  setTimeout(() => el.remove(), tone === 'ok' ? 5000 : 9000);
-}
 
 function reasonText(r) {
   if (!r) return t('reason.none');
@@ -66,11 +25,25 @@ function reasonText(r) {
 // ---------- Polling ----------
 let pollTimer = null;
 async function poll() {
-  const [a, b] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/values')]);
-  if (a.ok && a.data) S.status = a.data;
-  if (b.ok && b.data) S.values = b.data;
-  S.down = !(a.ok && b.ok);
-  renderAll();
+  if (S.polling) return;
+  S.polling = true;
+  try {
+    const [a, b] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/values')]);
+    if (a.ok && a.data) {
+      S.status = a.data;
+      // Uhrenabweichung Browser/Server aus dem HTTP-Date-Header (Sekundenaufloesung -> +0,5 s), geglaettet
+      const sd = a.date ? Date.parse(a.date) : NaN;
+      if (!Number.isNaN(sd)) {
+        const off = sd + 500 - Date.now();
+        S.clockOffset = S.clockOffsetSet ? S.clockOffset * 0.6 + off * 0.4 : off;
+        S.clockOffsetSet = true;
+      }
+    }
+    if (b.ok && b.data) S.values = b.data;
+    S.down = !(a.ok && b.ok);
+    renderAll();
+    hist.onStatus(S.status);
+  } finally { S.polling = false; }
 }
 function startPolling() {
   stopPolling();
@@ -104,38 +77,68 @@ function statusTone(key) {
   return 'warn';
 }
 
+const lost = () => { const i = S.status?.inverter?.state; return i === 'stale' || i === 'offline'; };
+
 function bindValues(root) {
   const v = S.values || {};
+  const gone = lost();
   root.querySelectorAll('[data-bind]').forEach((el) => {
     const [g, f] = el.dataset.bind.split('.');
-    const val = v[g]?.[f];
-    let out;
-    if (val === null || val === undefined) out = '–';
-    else if (el.dataset.fmt === 'power') { const p = power(val); out = p.num + ' ' + p.unit; }
-    else if (el.dataset.fmt === 'text') out = String(val);
-    else out = num(val, Number(el.dataset.digits ?? 0)) + (el.dataset.unit ? ' ' + el.dataset.unit : '');
-    el.textContent = out;
+    // Bei Verbindungsverlust keine alten Momentanwerte zeigen (irrefuehrend); Energiezaehler bleiben
+    const val = gone && (g === 'pv' || g === 'grid' || g === 'inverter') ? null : v[g]?.[f];
+    if (val === null || val === undefined) { el.textContent = '–'; return; }
+    if (el.dataset.fmt === 'kpipower') {
+      const p = power(val);
+      el.replaceChildren(p.num + ' ', h('small', { class: 'u' }, p.unit));
+    } else if (el.dataset.fmt === 'power') { const p = power(val); el.textContent = p.num + ' ' + p.unit; }
+    else if (el.dataset.fmt === 'text') el.textContent = String(val);
+    else el.textContent = num(val, Number(el.dataset.digits ?? 0)) + (el.dataset.unit ? ' ' + el.dataset.unit : '');
   });
+}
+
+// "HH:MM", bei aelteren Zeitpunkten (nicht heute) mit Datum
+function sinceLabel(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '–';
+  const today = new Date();
+  const same = d.toDateString() === today.toDateString();
+  return same ? fmt.hm(d) : fmt.dateShort(d) + ', ' + fmt.hm(d);
 }
 
 function renderBanner() {
   const b = $('banner');
-  const inv = S.status?.inverter?.state;
-  const age = ageSeconds();
-  const ageTxt = age == null ? '–' : ago(age);
-  let msg = null, tone = 'warn';
-  if (S.down) { msg = t('banner.portal_down'); tone = 'bad'; }
-  else if (inv === 'offline') { msg = t('banner.offline', { age: ageTxt }); tone = 'bad'; }
-  else if (inv === 'stale') { msg = t('banner.stale', { age: ageTxt }); }
-  else if (S.status && !S.values?.grid) { msg = t('banner.no_data'); tone = 'idle'; }
-  b.hidden = !msg;
-  if (msg) { b.textContent = msg; b.className = 'banner tone-' + tone; }
-  $('main').classList.toggle('is-stale', (inv === 'stale' || inv === 'offline' || S.down) && !!S.values);
+  const inv = S.status?.inverter;
+  let main = null, sub = null, tone = 'warn';
+  if (S.down) { main = t('banner.portal_down'); tone = 'bad'; }
+  else if (lost()) {
+    main = inv.last_success ? t('conn.lost_since', { time: sinceLabel(inv.last_success) }) : t('conn.never');
+    sub = t('conn.lost_help');
+    tone = inv.state === 'offline' ? 'bad' : 'warn';
+  } else if (S.status && !S.values?.grid) { main = t('banner.no_data'); tone = 'idle'; }
+  b.hidden = !main;
+  if (main) { b.replaceChildren(main, sub ? h('small', {}, sub) : null); b.className = 'banner tone-' + tone; }
+  $('main').classList.toggle('is-stale', (lost() || S.down) && !!S.values);
 }
 
+// Countdown bis zur naechsten Abfrage (poll.next_live_at, mit Uhrenabgleich), sonst "Aktualisiert vor ..."
 function renderAge() {
+  const el = $('age');
+  const p = S.status?.poll;
+  const next = p?.next_live_at ? Date.parse(p.next_live_at) : NaN;
+  if (S.down) { el.textContent = ''; return; }
+  if (!Number.isNaN(next)) {
+    const s = Math.ceil((next - (Date.now() + S.clockOffset)) / 1000);
+    if (s <= 0) {
+      el.textContent = t('ov.updating');
+      // Neuen Wert zeitnah holen, ohne auf den 5-s-Takt zu warten
+      if (Date.now() - S.fastAt > 2000) { S.fastAt = Date.now(); setTimeout(poll, 1200); }
+      return;
+    }
+    el.textContent = t(lost() ? 'ov.next_retry' : 'ov.next_update', { s: num(s) });
+    return;
+  }
   const age = ageSeconds();
-  $('age').textContent = age == null ? t('ov.no_update') : t('ov.updated', { age: ago(age) });
+  el.textContent = age == null ? t('ov.no_update') : t('ov.updated', { age: ago(age) });
 }
 
 function lightsData() {
@@ -147,19 +150,27 @@ function lightsData() {
     return { ic, title: t('light.' + name), text: state && has(key) ? t(key) : t('light.unknown'),
       tone: state && has(key) ? toneOf[state] || 'idle' : 'idle' };
   };
-  return [
+  const out = [
     mk('inverter', 'i-sun', st.inverter?.state),
     mk('dongle', 'i-plug', st.dongle?.state),
     mk('mqtt', 'i-cloud', st.mqtt?.state),
     mk('write', 'i-pen', st.write_access),
   ];
+  // Kurze Aussetzer in 24 h: 1-2 dezenter Hinweis, ab 3 gelb statt gruen
+  const n = Number(st.inverter?.dropouts_24h) || 0;
+  if (n > 0) {
+    out[0].hint = t(n === 1 ? 'light.dropouts_one' : 'light.dropouts_many', { n: num(n) });
+    if (n >= 3 && out[0].tone === 'ok') out[0].tone = 'warn';
+  }
+  return out;
 }
 
 function renderOverview() {
   const v = S.values || {};
+  const gone = lost();
   bindValues($('view-overview'));
 
-  const w = v.grid?.active_power_w;
+  const w = gone ? null : v.grid?.active_power_w;
   const max = v.device?.max_power_w;
   const p = power(w);
   $('pw-num').textContent = p.num;
@@ -169,40 +180,45 @@ function renderOverview() {
   $('ring-fg').style.visibility = pct < 0.4 ? 'hidden' : '';
   if (w != null && max) {
     const m = power(max);
-    $('pw-pct').textContent = num(pct, 0) + '\u00a0%';
-    $('pw-of').textContent = t('ov.utilization', { max: m.num + '\u00a0' + m.unit });
+    $('pw-pct').textContent = num(pct, 0) + ' %';
+    $('pw-of').textContent = t('ov.utilization', { max: m.num + ' ' + m.unit });
   } else { $('pw-pct').textContent = ''; $('pw-of').textContent = ''; }
-  const inp = v.pv?.input_power_w;
+  const inp = gone ? null : v.pv?.input_power_w;
   [1, 2].forEach((n) => {
-    const pw = v.pv?.[`pv${n}_power_w`];
+    const pw = gone ? null : v.pv?.[`pv${n}_power_w`];
     const share = pw != null && inp > 0 ? Math.min(100, (pw / inp) * 100) : 0;
     const bar = $('bar-' + n);
     bar.style.width = share.toFixed(1) + '%';
     bar.parentElement.title = t('ov.share') + ': ' + num(share, 0) + ' %';
   });
 
+  // Spitzenleistung: Uhrzeit (Ortszeit) klein dahinter, "–" wenn unbekannt
+  const pts = v.energy?.peak_power_today_ts;
+  const peakEl = $('peak-at');
+  const hmTxt = pts ? hm(pts) : null;
+  peakEl.textContent = v.energy?.peak_power_today_w == null ? '' : hmTxt ? t('ov.peak_at', { time: hmTxt }) : '–';
+
   const key = v.inverter?.status;
-  const tone = statusTone(key);
-  $('state-pill').className = 'state-pill tone-' + tone;
-  $('state-pill').querySelector('use').setAttribute('href', tone === 'ok' ? '#i-bolt' : tone === 'idle' ? '#i-sun' : '#i-alert');
-  $('state-text').textContent = v.inverter ? statusText(key) : t('status.none');
-  $('hero').classList.toggle('is-night', !!key && key.startsWith('standby'));
-  $('night-hint').hidden = !(key && key === 'standby_no_irradiation');
+  const tone = gone ? (S.status.inverter.state === 'offline' ? 'bad' : 'warn') : statusTone(key);
+  const pill = $('state-pill');
+  pill.className = 'state-pill tone-' + tone + (gone ? ' lost' : '');
+  pill.querySelector('use').setAttribute('href', gone ? '#i-alert' : tone === 'ok' ? '#i-bolt' : tone === 'idle' ? '#i-sun' : '#i-alert');
+  $('state-text').textContent = gone ? t('conn.pill') : v.inverter ? statusText(key) : t('status.none');
+  $('hero').classList.toggle('is-night', !gone && !!key && key.startsWith('standby'));
+  $('night-hint').hidden = gone || !(key && key === 'standby_no_irradiation');
 
   const alarms = v.inverter?.alarms;
-  $('alarms').textContent = Array.isArray(alarms) && alarms.length ? alarms.map(humanize).join(', ') : v.inverter ? t('ov.no_alarms') : '–';
+  $('alarms').textContent = gone ? '–' : Array.isArray(alarms) && alarms.length ? alarms.map(humanize).join(', ') : v.inverter ? t('ov.no_alarms') : '–';
 
   const ul = $('lights');
   ul.replaceChildren(...lightsData().map((l) => h('li', { class: 'light tone-' + l.tone },
     h('span', { class: 'dot', 'aria-hidden': 'true' }), icon(l.ic),
-    h('div', {}, h('strong', {}, l.title), h('span', {}, l.text)))));
+    h('div', {}, h('strong', {}, l.title), h('span', {}, l.text), l.hint ? h('span', { class: 'sub-hint' }, l.hint) : null))));
   renderAge();
 }
 
 // ---------- Rendering: Alle Werte ----------
 let valBuilt = false;
-// registers[].name ist der Feld-Key (z. B. pv1_voltage_v); Klartext kommt aus i18n (field.<key>).
-const fieldName = (key) => tryT('field.' + key, humanize(key));
 const numAuto = (n) => new Intl.NumberFormat(lang, { maximumFractionDigits: 3 }).format(n);
 function renderValues() {
   const regs = S.values?.registers || [];
@@ -345,7 +361,7 @@ function renderSettings() {
       else if (name === 'log_level' || lim.choices) {
         const ch = lim.choices || ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
         input = h('select', { id, name, disabled: !can }, (ch.includes(val) ? ch : [val, ...ch]).map((c) => h('option', { value: c, selected: c === val }, c)));
-      } else input = h('input', { type: 'text', id, name, value: val ?? '', disabled: !can });
+      } else input = h('input', { type: 'text', id, name, value: val ?? '', disabled: !can, maxlength: name === 'currency' ? 3 : null, autocapitalize: name === 'currency' ? 'characters' : null });
       const range = lim.min != null && lim.max != null && typeof val === 'number'
         ? h('small', { class: 'muted' }, t('set.range', { min: num(lim.min, 0), max: num(lim.max, 0) })) : null;
       return h('div', { class: 'field' + (typeof val === 'boolean' ? ' check' : '') },
@@ -353,18 +369,78 @@ function renderSettings() {
         h('small', { class: 'field-error', id: 'err-' + name, role: 'alert', hidden: true }));
     });
     form.replaceChildren(...rows, can ? h('div', { class: 'btn-row' }, h('button', { type: 'submit', class: 'btn primary' }, t('set.save'))) : null);
-    const ro = $('set-readonly');
-    ro.replaceChildren(...Object.entries(s.readonly || {}).flatMap(([k, v]) => {
-      const secret = k.endsWith('_set');
-      const name = secret ? k.slice(0, -4) : k;
-      const text = secret ? (v ? t('set.secret_set') : t('set.secret_unset'))
-        : typeof v === 'boolean' ? (v ? t('common.yes') : t('common.no')) : (v === '' || v == null ? '–' : String(v));
-      const mono = !secret && typeof v === 'string' && /[\/.]/.test(v);
-      const body = mono ? text.split(/(?<=[\/.])/).flatMap((p, i) => (i ? [document.createElement('wbr'), p] : [p])) : [text];
-      return [h('dt', {}, tryT('field.' + name, name)),
-        h('dd', { class: secret ? (v ? 'pill ok' : 'pill idle') : mono ? 'mono' : '' }, ...body)];
-    }));
+    renderSystem();
   }
+}
+
+// "Verbindung und System": eine Schrift, gleiche Zeilen, Zustaende dezent; Monospace nur fuer Host:Port/Topic
+function renderSystem() {
+  const ro = S.settings?.readonly || {};
+  const st = S.status || {};
+  const used = new Set();
+  const take = (k) => { used.add(k); return ro[k]; };
+  const text = (v) => (v === '' || v == null ? '–' : String(v));
+  const hp = (hk, pk) => { const a = take(hk), b = take(pk); return a ? (b ? `${a}:${b}` : String(a)) : '–'; };
+  const mono = (v) => ({ mono: true, v });
+  const flag = (on, yes, no) => ({ node: h('span', { class: 'state ' + (on ? 'on' : 'off') }, h('i'), on ? yes : no) });
+  const secret = (k) => flag(!!take(k + '_set'), t('set.secret_set'), t('set.secret_unset'));
+  const onoff = (k) => flag(!!take(k), t('common.on'), t('common.off'));
+  const grp = (title, rows, hint) => h('div', { class: 'sysgrp' }, h('h3', {}, title),
+    h('dl', { class: 'kv' }, rows.flatMap(([label, c]) => [h('dt', {}, label),
+      h('dd', { class: c.mono ? 'mono' : '' }, c.node || (c.mono ? c.v : text(c.v)))])),
+    hint ? h('p', { class: 'muted small-text' }, hint) : null);
+  const sw = take('software_version'), fw = take('firmware_version');
+  const groups = [
+    grp(t('set.grp_device'), [[fieldName('software_version'), { v: sw ?? S.values?.device?.software_version }],
+      [fieldName('firmware_version'), { v: fw ?? S.values?.device?.firmware_version }]], t('ov.version_hint')),
+    grp(t('set.grp_conn'), [
+      [t('sys.dongle'), mono(hp('huawei_host', 'huawei_port'))],
+      [fieldName('huawei_unit_id'), { v: take('huawei_unit_id') }],
+      [fieldName('mqtt_host'), mono(hp('mqtt_host', 'mqtt_port'))],
+      [fieldName('base_topic'), mono(text(take('base_topic')))],
+      ...(st.bridge?.version ? [[fieldName('version'), { v: st.bridge.version }]] : [])]),
+    grp(t('set.grp_sec'), [
+      [fieldName('mqtt_username'), secret('mqtt_username')], [fieldName('mqtt_password'), secret('mqtt_password')],
+      [fieldName('mqtt_tls'), onoff('mqtt_tls')], [fieldName('portal_password'), secret('portal_password')],
+      [fieldName('allow_shutdown'), onoff('allow_shutdown')]]),
+  ];
+  // unbekannte weitere Schluessel (neue Backend-Felder) trotzdem anzeigen
+  const rest = Object.entries(ro).filter(([k]) => !used.has(k)).map(([k, v]) => {
+    const sec = k.endsWith('_set');
+    const name = sec ? k.slice(0, -4) : k;
+    return [fieldName(name), sec ? flag(!!v, t('set.secret_set'), t('set.secret_unset'))
+      : typeof v === 'boolean' ? flag(v, t('common.on'), t('common.off')) : { v }];
+  });
+  if (rest.length) groups.push(grp(t('set.grp_more'), rest));
+  $('set-readonly').replaceChildren(...groups);
+}
+
+function fmtBytes(n) {
+  if (n == null) return '–';
+  if (n >= 1048576) return num(n / 1048576, 1) + ' MB';
+  return num(Math.max(1, n / 1024), 0) + ' KB';
+}
+function renderMemory() {
+  const hs = S.status?.history;
+  $('mem-info').textContent = hs ? t('mem.info', { samples: num(hs.samples ?? 0), size: fmtBytes(hs.db_size_bytes),
+    oldest: hs.oldest ? fmt.dateShort(new Date(hs.oldest)) : '–', days: num(hs.days ?? 0) }) : '';
+  $('mem-info').hidden = !hs;
+  const can = loggedIn();
+  $('mem-login').hidden = can || !passwordSet();
+  document.querySelectorAll('#mem-card [data-scope]').forEach((b) => { b.disabled = !can; });
+}
+const MEM_CONFIRM = { samples: 'mem.confirm_samples', daily: 'mem.confirm_daily', all: 'mem.confirm_all' };
+async function clearMemory(scope, btn) {
+  if (!(await confirmDialog(t(MEM_CONFIRM[scope])))) return;
+  btn.disabled = true;
+  const r = await api('POST', '/api/history/clear', { scope });
+  btn.disabled = false;
+  if (r.status === 401) return sessionExpired();
+  if (r.status === 404) return toast(t('hist.unsupported'), 'warn');
+  if (!r.ok) return toast(t(r.status === 403 ? 'err.forbidden' : r.status === 0 ? 'err.network' : 'mem.failed'), 'bad');
+  const d = r.data?.deleted || {};
+  toast(t('mem.done', { samples: num(d.samples ?? 0), daily: num(d.daily ?? 0), milestones: num(d.milestones ?? 0) }));
+  poll();
 }
 
 async function loadSettings() {
@@ -379,7 +455,8 @@ async function saveSettings(ev) {
   for (const [name, val] of Object.entries(cur)) {
     const el = $('f-' + name);
     if (!el) continue;
-    const nv = typeof val === 'boolean' ? el.checked : typeof val === 'number' ? (el.value === '' ? NaN : Number(el.value)) : el.value;
+    let nv = typeof val === 'boolean' ? el.checked : typeof val === 'number' ? (el.value === '' ? NaN : Number(el.value)) : el.value;
+    if (name === 'currency') nv = String(nv).trim().toUpperCase();
     if (nv !== val) patch[name] = nv;
   }
   document.querySelectorAll('#set-form .field-error').forEach((e) => { e.hidden = true; });
@@ -439,6 +516,7 @@ function confirmDialog(text) {
 function openLogin() {
   $('login-error').hidden = true;
   $('login-pw').value = '';
+  $('login-forgot-text').hidden = true;
   $('dlg-login').showModal();
   $('login-pw').focus();
 }
@@ -470,21 +548,26 @@ function renderAuth() {
   const b = $('btn-auth');
   b.hidden = !S.status || !passwordSet();
   $('btn-auth-label').textContent = loggedIn() ? t('auth.logout') : t('auth.login');
+  $('acct-text').textContent = !S.status ? '' : !passwordSet() ? t('ctl.no_password') : loggedIn() ? t('set.access_in') : t('set.access_out');
 }
 
 // ---------- Router ----------
-const ROUTES = ['overview', 'values', 'log', 'settings'];
+const ROUTES = ['overview', 'history', 'awards', 'values', 'log', 'settings'];
 const currentRoute = () => { const r = location.hash.slice(1); return ROUTES.includes(r) ? r : 'overview'; };
 function route() {
   const r = currentRoute();
   document.querySelectorAll('[data-view]').forEach((s) => { s.hidden = s.dataset.view !== r; });
-  document.querySelectorAll('.tabs a').forEach((a) => {
+  document.querySelectorAll('.tabs a[data-route]').forEach((a) => {
     if (a.dataset.route === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   stopLog();
+  hist.deactivate(); awards.deactivate();
   if (r === 'log' && !document.hidden) startLog();
   if (r === 'settings') loadSettings();
+  if (r === 'history') hist.activate();
+  if (r === 'awards') awards.activate();
   renderAll();
+  window.scrollTo(0, 0);
 }
 
 function renderAll() {
@@ -493,7 +576,7 @@ function renderAll() {
   const r = currentRoute();
   if (r === 'overview') renderOverview();
   if (r === 'values') renderValues();
-  if (r === 'settings') { renderControl(); renderSettings(); }
+  if (r === 'settings') { renderControl(); renderSettings(); renderMemory(); }
 }
 
 // ---------- Start ----------
@@ -506,13 +589,16 @@ async function init() {
     await setLang(sel.value);
     applyDom();
     S.ctlSig = null; S.setSig = null; valBuilt = false;
-    $('btn-auth-label').textContent = '';
     renderAll();
     renderLog(true);
+    hist.relang(); awards.relang();
   });
   $('btn-auth').addEventListener('click', () => (loggedIn() ? doLogout() : openLogin()));
   $('login-form').addEventListener('submit', doLogin);
   $('login-cancel').addEventListener('click', () => $('dlg-login').close());
+  $('login-forgot').addEventListener('click', () => { $('login-forgot-text').hidden = !$('login-forgot-text').hidden; });
+  document.querySelectorAll('#mem-card [data-scope]').forEach((b) => b.addEventListener('click', () => clearMemory(b.dataset.scope, b)));
+  hist.init(() => S.status);
   $('set-form').addEventListener('submit', saveSettings);
   $('val-filter').addEventListener('input', renderValues);
   $('val-group').addEventListener('change', renderValues);
@@ -555,7 +641,7 @@ async function init() {
     else { poll(); startPolling(); if (currentRoute() === 'log') startLog(); }
   });
   window.addEventListener('hashchange', route);
-  setInterval(() => { if (!document.hidden && currentRoute() === 'overview') { renderAge(); renderBanner(); } }, 1000);
+  setInterval(() => { if (!document.hidden && currentRoute() === 'overview') renderAge(); }, 500);
 
   await poll();
   route();

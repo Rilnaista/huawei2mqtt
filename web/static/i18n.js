@@ -84,6 +84,12 @@ export function ago(seconds) {
   return rtf.format(-Math.floor(s / 86400), 'day');
 }
 
+export function hm(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat(lang, { hour: '2-digit', minute: '2-digit' }).format(d);
+}
+
 export function time(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso ?? '');

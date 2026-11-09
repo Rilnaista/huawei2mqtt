@@ -8,7 +8,7 @@ import pytest
 WEB = Path(__file__).resolve().parents[2] / "web"
 LANGS = ["de", "en", "nl", "fr", "it", "es", "pl"]
 NAMESPACES = ("app|a11y|common|nav|lang|auth|banner|ov|status|light|val|group|log|ctl|cmd|res|"
-              "reason|err|login|logout|set|field")
+              "reason|err|login|logout|set|field|hist|aw|conn|sys|mem")
 
 
 def load(lang):
@@ -72,6 +72,12 @@ def test_dynamic_key_groups_present(dicts):
         assert f"status.{key}" in dicts["de"]
     for key in ("shutdown_not_allowed", "rate_limited"):
         assert f"reason.{key}" in dicts["de"]
+    for k in ("hist.preset.today", "hist.preset.24h", "hist.preset.days", "aw.rank.best_day", "aw.rank.best_week",
+              "aw.rank.best_month", "aw.rank.best_year", "aw.rank.peak_power", "aw.rank.longest_day",
+              "aw.rank.earliest_start"):
+        assert k in dicts["de"], k
+    for f in ("history_days", "feed_in_tariff", "currency", "co2_factor", "milestone_step_kwh"):
+        assert f"field.{f}" in dicts["de"], f
     for f in ("poll_interval_live", "poll_interval_static", "log_level", "mqtt_retain", "mqtt_flat_topics",
               "huawei_host", "huawei_port", "huawei_unit_id", "mqtt_host", "mqtt_port", "mqtt_username",
               "mqtt_password", "mqtt_tls", "portal_password", "allow_shutdown", "base_topic"):
@@ -79,7 +85,7 @@ def test_dynamic_key_groups_present(dicts):
 
 
 def test_no_unused_keys(dicts):
-    dynamic = ("status.", "reason.", "field.", "group.", "cmd.", "light.")
+    dynamic = ("status.", "reason.", "field.", "group.", "cmd.", "light.", "hist.preset.", "aw.rank.")
     used = used_keys()
     unused = [k for k in dicts["de"] if k not in used and not k.startswith(dynamic)]
     assert not unused, unused

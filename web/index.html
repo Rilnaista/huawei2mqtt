@@ -29,40 +29,25 @@
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8.5M6.9 6.6a7.5 7.5 0 1010.2 0"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5l9.5 16.5h-19zM12 10v4.5M12 17.4v.1"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3.5 20.5h17M5 15.5l4-5 3.5 3L19 6"/></symbol>
+  <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M8 4.5h8v5a4 4 0 01-8 0zM8 6H4.5v1.5A3 3 0 007.5 10.5M16 6h3.5v1.5a3 3 0 01-3 3M12 13.5V17M8.5 20h7M10 17h4"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></symbol>
+  <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M5 19c0-8 5-13.5 14-14 .5 9-4.5 14-12 14M5 19c3-4 6-6.5 9-8"/></symbol>
+  <symbol id="i-coin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M14.6 9.3c-.6-.8-1.500-1.200-2.600-1.200-1.400 0-2.500.8-2.500 2s1.200 1.700 2.500 2 2.500.8 2.500 2-1.100 2-2.500 2c-1.100 0-2-.4-2.600-1.200M12 6.5V8M12 16v1.500"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 21V4M6 5h11l-2 3.500 2 3.500H6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.500 7V4.500h5V7M7 7l.8 12.500h8.400L17 7M10.500 11v5M13.500 11v5"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.500 12h17M12 3.500c3 3 3 14 0 17M12 3.500c-3 3-3 14 0 17"/></symbol>
   <symbol id="i-temp" viewBox="0 0 24 24"><path d="M10 14.5V5a2 2 0 014 0v9.5a4 4 0 11-4 0z"/></symbol>
 </svg>
 
 <a class="skip" href="#main" data-i18n="a11y.skip"></a>
 
-<header class="top">
-  <div class="brand">
-    <span class="brand-mark"><svg class="ico"><use href="#i-sun"/></svg></span>
-    <div class="brand-text">
-      <strong>huawei2mqtt</strong>
-      <span data-i18n="app.title"></span>
-    </div>
-  </div>
-  <div class="top-actions">
-    <label class="lang">
-      <span class="sr-only" data-i18n="lang.label"></span>
-      <select id="lang">
-        <option value="de">Deutsch</option>
-        <option value="en">English</option>
-        <option value="nl">Nederlands</option>
-        <option value="fr">Français</option>
-        <option value="it">Italiano</option>
-        <option value="es">Español</option>
-        <option value="pl">Polski</option>
-      </select>
-    </label>
-    <button type="button" id="btn-auth" class="btn ghost" hidden>
-      <svg class="ico"><use href="#i-user"/></svg><span id="btn-auth-label"></span>
-    </button>
-  </div>
-</header>
-
 <nav class="tabs" data-i18n-aria-label="nav.main">
+  <a class="brand" href="#overview" data-i18n-title="app.title"><span class="brand-mark"><svg class="ico"><use href="#i-sun"/></svg></span><strong>huawei2mqtt</strong></a>
   <a href="#overview" data-route="overview"><svg class="ico"><use href="#i-home"/></svg><span data-i18n="nav.overview"></span></a>
+  <a href="#history" data-route="history"><svg class="ico"><use href="#i-chart"/></svg><span data-i18n="nav.history"></span></a>
+  <a href="#awards" data-route="awards"><svg class="ico"><use href="#i-trophy"/></svg><span data-i18n="nav.awards"></span></a>
   <a href="#values" data-route="values"><svg class="ico"><use href="#i-list"/></svg><span data-i18n="nav.values"></span></a>
   <a href="#log" data-route="log"><svg class="ico"><use href="#i-log"/></svg><span data-i18n="nav.log"></span></a>
   <a href="#settings" data-route="settings"><svg class="ico"><use href="#i-gear"/></svg><span data-i18n="nav.settings"></span></a>
@@ -88,9 +73,9 @@
       <div class="hero-side">
         <div id="state-pill" class="state-pill tone-idle"><svg class="ico"><use href="#i-sun"/></svg><span id="state-text"></span></div>
         <div class="kpis">
-          <div class="kpi"><span class="label" data-i18n="ov.today"></span><span class="kpi-v"><span data-bind="energy.daily_yield_kwh" data-digits="1">–</span> <small>kWh</small></span></div>
-          <div class="kpi"><span class="label" data-i18n="ov.total"></span><span class="kpi-v"><span data-bind="energy.total_yield_kwh" data-digits="0">–</span> <small>kWh</small></span></div>
-          <div class="kpi"><span class="label" data-i18n="ov.peak"></span><span class="kpi-v"><span data-bind="energy.peak_power_today_w" data-fmt="power">–</span></span></div>
+          <div class="kpi"><span class="label" data-i18n="ov.today"></span><span class="kpi-v"><span data-bind="energy.daily_yield_kwh" data-digits="1">–</span> <small class="u">kWh</small></span></div>
+          <div class="kpi"><span class="label" data-i18n="ov.total"></span><span class="kpi-v"><span data-bind="energy.total_yield_kwh" data-digits="0">–</span> <small class="u">kWh</small></span></div>
+          <div class="kpi"><span class="label" data-i18n="ov.peak"></span><span class="kpi-v"><span data-bind="energy.peak_power_today_w" data-fmt="kpipower">–</span><small class="at" id="peak-at"></small></span></div>
         </div>
         <p class="age" id="age"></p>
         <p class="hint" id="night-hint" hidden data-i18n="ov.night_hint"></p>
@@ -136,6 +121,9 @@
         <p class="line"><span class="label" data-i18n="ov.efficiency"></span><strong data-bind="inverter.efficiency_pct" data-unit="%" data-digits="1">–</strong></p>
         <p class="line"><span class="label" data-i18n="ov.temperature"></span><strong data-bind="inverter.internal_temperature_c" data-unit="°C" data-digits="1">–</strong></p>
         <p class="line"><span class="label" data-i18n="ov.alarms"></span><strong id="alarms">–</strong></p>
+        <p class="line"><span class="label" data-i18n="ov.software"></span><strong data-bind="device.software_version" data-fmt="text">–</strong></p>
+        <p class="line"><span class="label" data-i18n="ov.firmware"></span><strong data-bind="device.firmware_version" data-fmt="text">–</strong></p>
+        <p class="muted small-text" data-i18n="ov.version_hint"></p>
       </article>
 
       <article class="card wide">
@@ -143,6 +131,37 @@
         <ul class="lights" id="lights"></ul>
       </article>
     </div>
+  </section>
+
+  <!-- ===== Verlauf ===== -->
+  <section id="view-history" data-view="history" hidden>
+    <div class="card hist">
+      <h2><svg class="ico"><use href="#i-chart"/></svg><span data-i18n="hist.title"></span><span class="live-tag" id="hist-live" hidden><i></i><span data-i18n="hist.live"></span></span></h2>
+      <div class="hist-bar">
+        <div class="seg" id="hist-presets" role="group" data-i18n-aria-label="hist.range"></div>
+        <details class="fields" id="hist-fields">
+          <summary><svg class="ico"><use href="#i-list"/></svg><span data-i18n="hist.fields"></span> <span class="count" id="hist-fcount"></span></summary>
+          <div class="fields-body" id="hist-fbody"></div>
+        </details>
+      </div>
+      <ul class="legend" id="hist-legend"></ul>
+      <div class="hist-box" id="hist-box">
+        <svg id="hist-svg" class="hist-svg" role="img" data-i18n-aria-label="hist.chart"></svg>
+        <div class="hist-tip" id="hist-tip" hidden></div>
+        <p class="hist-note" id="hist-note" hidden></p>
+      </div>
+      <p class="muted small-text" data-i18n="hist.band"></p>
+    </div>
+  </section>
+
+  <!-- ===== Awards ===== -->
+  <section id="view-awards" data-view="awards" hidden>
+    <div class="card awards-head">
+      <h2><svg class="ico"><use href="#i-trophy"/></svg><span data-i18n="aw.title"></span></h2>
+      <p class="muted" id="aw-since" data-i18n="aw.intro"></p>
+    </div>
+    <p class="notice" id="aw-note" hidden></p>
+    <div id="aw-body"></div>
   </section>
 
   <!-- ===== Alle Werte ===== -->
@@ -194,6 +213,29 @@
   <!-- ===== Einstellungen & Bedienung ===== -->
   <section id="view-settings" data-view="settings" hidden>
     <div class="cards">
+      <article class="card wide">
+        <h2><svg class="ico"><use href="#i-globe"/></svg><span data-i18n="set.language"></span></h2>
+        <div class="acct">
+          <div class="acct-col">
+            <label class="sr-only" for="lang" data-i18n="lang.label"></label>
+            <select id="lang">
+              <option value="de">Deutsch</option>
+              <option value="en">English</option>
+              <option value="nl">Nederlands</option>
+              <option value="fr">Français</option>
+              <option value="it">Italiano</option>
+              <option value="es">Español</option>
+              <option value="pl">Polski</option>
+            </select>
+            <p class="muted small-text" data-i18n="set.language_hint"></p>
+          </div>
+          <div class="acct-col">
+            <p class="acct-state" id="acct-text"></p>
+            <button type="button" id="btn-auth" class="btn" hidden><svg class="ico"><use href="#i-user"/></svg><span id="btn-auth-label"></span></button>
+          </div>
+        </div>
+      </article>
+
       <article class="card wide" id="ctl-card">
         <h2><svg class="ico"><use href="#i-bolt"/></svg><span data-i18n="ctl.title"></span></h2>
         <div id="ctl-notice" class="notice" hidden></div>
@@ -247,10 +289,25 @@
         <form id="set-form" novalidate></form>
       </article>
 
+      <article class="card wide" id="mem-card">
+        <h2><svg class="ico"><use href="#i-trash"/></svg><span data-i18n="mem.title"></span></h2>
+        <p class="muted" data-i18n="mem.intro"></p>
+        <p class="muted" id="mem-info"></p>
+        <p class="muted" id="mem-login" hidden data-i18n="mem.login"></p>
+        <div class="mem-rows">
+          <div class="mem-row"><div><strong data-i18n="mem.samples_btn"></strong><p class="muted" data-i18n="mem.samples_help"></p></div>
+            <button type="button" class="btn danger" data-scope="samples" data-i18n="mem.clear"></button></div>
+          <div class="mem-row"><div><strong data-i18n="mem.daily_btn"></strong><p class="muted" data-i18n="mem.daily_help"></p></div>
+            <button type="button" class="btn danger" data-scope="daily" data-i18n="mem.clear"></button></div>
+          <div class="mem-row"><div><strong data-i18n="mem.all_btn"></strong><p class="muted" data-i18n="mem.all_help"></p></div>
+            <button type="button" class="btn danger" data-scope="all" data-i18n="mem.clear"></button></div>
+        </div>
+      </article>
+
       <article class="card wide">
         <h2><svg class="ico"><use href="#i-lock"/></svg><span data-i18n="set.readonly"></span></h2>
         <p class="muted" data-i18n="set.readonly_hint"></p>
-        <dl class="kv" id="set-readonly"></dl>
+        <div id="set-readonly"></div>
       </article>
     </div>
   </section>
@@ -265,6 +322,8 @@
     <label for="login-pw" data-i18n="login.password"></label>
     <input type="password" id="login-pw" autocomplete="current-password" required>
     <p class="field-error" id="login-error" role="alert" hidden></p>
+    <button type="button" class="linkbtn" id="login-forgot" data-i18n="login.forgot"></button>
+    <p class="muted forgot" id="login-forgot-text" hidden data-i18n="login.forgot_text"></p>
     <div class="btn-row end">
       <button type="button" class="btn ghost" id="login-cancel" data-i18n="common.cancel"></button>
       <button type="submit" class="btn primary" data-i18n="login.submit"></button>

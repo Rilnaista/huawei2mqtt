@@ -33,7 +33,7 @@ def wait_up():
 
 
 def login(page):
-    page.goto(URL + "#overview")
+    page.goto(URL + "#settings")  # Login-Button liegt in den Einstellungen
     page.click("#btn-auth")
     page.fill("#login-pw", "demo")
     page.keyboard.press("Enter")
@@ -50,7 +50,7 @@ def shot(page, route, name, wait=1200):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     srv = subprocess.Popen([sys.executable, str(ROOT / "tests/ui/mock_server.py"), "--port", str(PORT),
-                            "--shutdown-allowed"], stdout=subprocess.DEVNULL)
+                            "--shutdown-allowed", "--sun-now", "13:20"], stdout=subprocess.DEVNULL)
     tmp = Path(tempfile.mkdtemp())
     try:
         wait_up()
@@ -72,13 +72,21 @@ def main():
                 if scheme == "light":
                     shot(pg, "values", "values.png")
                     shot(pg, "log", "log.png")
+                shot(pg, "history", f"history-{scheme}.png", 2000)
+                shot(pg, "awards", f"awards-{scheme}.png", 1500)
                 ctx.close()
             ctx = b.new_context(storage_state=str(state), **desk)
             shot(ctx.new_page(), "settings", "settings.png", 1500)
             ctx.close()
-            ctx = b.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, locale="de-DE")
-            shot(ctx.new_page(), "overview", "mobile.png", 1500)
-            ctx.close()
+            for scheme in ("light", "dark"):
+                ctx = b.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, locale="de-DE",
+                                    color_scheme=scheme, has_touch=True, is_mobile=True)
+                pg = ctx.new_page()
+                if scheme == "light":
+                    shot(pg, "overview", "mobile.png", 1500)
+                shot(pg, "history", f"history-mobile-{scheme}.png", 2000)
+                shot(pg, "awards", f"awards-mobile-{scheme}.png", 1500)
+                ctx.close()
 
             # Tour als Video
             vdir = tmp / "video"
@@ -93,10 +101,14 @@ def main():
             pg.click("#val-filter")
             pg.keyboard.type("pv1", delay=220)
             pg.wait_for_timeout(1400)
-            pg.select_option("#lang", "en")
-            pg.wait_for_timeout(1400)
+            pg.click('a[data-route="history"]')
+            pg.wait_for_timeout(1800)
+            pg.click('a[data-route="awards"]')
+            pg.wait_for_timeout(1800)
             pg.click('a[data-route="settings"]')
-            pg.wait_for_timeout(2200)
+            pg.wait_for_timeout(1200)
+            pg.select_option("#lang", "en")  # Sprachwahl liegt in den Einstellungen
+            pg.wait_for_timeout(1800)
             ctx.close()
             video = next(vdir.glob("*.webm"))
             b.close()
