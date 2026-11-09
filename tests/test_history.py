@@ -232,6 +232,29 @@ async def test_samples_buckets_and_null(cfg, hist, now):
     assert e["series"]["input_power_w"]["avg"] == [None] * 4
 
 
+async def test_samples_include_unflushed_buffer(cfg, hist, now):
+    base = T(2026, 7, 1, 12)
+    f, t = base.isoformat(), (base + timedelta(seconds=50)).isoformat()
+    # only in RAM buffer (no flush)
+    hist.record(base, vals(input_power_w=100))
+    hist.record(base + timedelta(seconds=10), vals(input_power_w=300))
+    d = await hist.samples(f, t, ["input_power_w"], 5)
+    s = d["series"]["input_power_w"]
+    assert s["avg"] == [100, 300, None, None, None]
+    assert hist.status()["samples"] == 0 and rows(cfg, "SELECT COUNT(*) FROM samples")[0][0] == 0
+    # mix DB + buffer in the same bucket
+    await hist.flush()
+    hist.record(base + timedelta(seconds=11), vals(input_power_w=500))
+    hist.record(base + timedelta(seconds=40), vals(input_power_w=70))
+    d = await hist.samples(f, t, ["input_power_w"], 5)
+    s = d["series"]["input_power_w"]
+    assert s["avg"] == [100, 400, None, None, 70]
+    assert s["min"] == [100, 300, None, None, 70] and s["max"] == [100, 500, None, None, 70]
+    # buffer rows outside the window are ignored
+    d = await hist.samples((base + timedelta(seconds=20)).isoformat(), t, ["input_power_w"], 2)
+    assert d["series"]["input_power_w"]["avg"] == [None, 70]
+
+
 async def test_samples_defaults_and_validation(hist, now):
     d = await hist.samples()
     assert d["from"] == "2026-06-30T22:00:00Z"                 # local midnight (CEST)

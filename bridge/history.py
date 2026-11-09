@@ -221,24 +221,46 @@ class History:
                 pass
         return {"samples": n, "oldest": aw.iso(oldest), "db_size_bytes": size}
 
-    def _query_samples(self, f: int, t: int, fields: list[str], points: int) -> dict[str, Any]:
+    def _query_samples(self, f: int, t: int, fields: list[str], points: int,
+                       buf: list[tuple[int, dict[str, Any]]] | None = None) -> dict[str, Any]:
+        """DB buckets (avg/min/max) merged with ``buf`` (snapshot of not yet committed rows)."""
         step = (t - f) / points
-        sel = ", ".join(f'AVG("{n}"), MIN("{n}"), MAX("{n}")' for n in fields)
+        sel = ", ".join(f'AVG("{n}"), MIN("{n}"), MAX("{n}"), COUNT("{n}")' for n in fields)
         sql = (f"SELECT MIN(CAST((ts - ?) / ? AS INTEGER), ?) AS b, {sel} FROM samples "
                "WHERE ts >= ? AND ts <= ? GROUP BY b")
         series = {n: {"avg": [None] * points, "min": [None] * points, "max": [None] * points}
                   for n in fields}
         with self._lock:
             rows = self._db().execute(sql, (f, step, points - 1, f, t)).fetchall()
+        # acc[(bucket, field)] = [sum, min, max, count]
+        acc: dict[tuple[int, str], list[float]] = {}
         for row in rows:
             b = row[0]
             for i, n in enumerate(fields):
-                avg, lo, hi = row[1 + 3 * i: 4 + 3 * i]
-                if avg is None:
+                avg, lo, hi, cnt = row[1 + 4 * i: 5 + 4 * i]
+                if avg is None or not cnt:
                     continue
-                series[n]["avg"][b] = round(avg, 3)
-                series[n]["min"][b] = round(lo, 3)
-                series[n]["max"][b] = round(hi, 3)
+                acc[(b, n)] = [avg * cnt, lo, hi, cnt]
+        for ts, r in buf or ():
+            if ts < f or ts > t:
+                continue
+            b = min(int((ts - f) / step), points - 1)
+            for n in fields:
+                v = r.get(n)
+                if v is None:
+                    continue
+                a = acc.get((b, n))
+                if a is None:
+                    acc[(b, n)] = [v, v, v, 1]
+                else:
+                    a[0] += v
+                    a[1] = min(a[1], v)
+                    a[2] = max(a[2], v)
+                    a[3] += 1
+        for (b, n), (sm, lo, hi, cnt) in acc.items():
+            series[n]["avg"][b] = round(sm / cnt, 3)
+            series[n]["min"][b] = round(lo, 3)
+            series[n]["max"][b] = round(hi, 3)
         return {"from": aw.iso(f), "to": aw.iso(t), "step_s": _fmt_step(step), "fields": fields,
                 "t": [int((f + i * step) * 1000) for i in range(points)], "series": series,
                 "available": AVAILABLE}
@@ -480,7 +502,8 @@ class History:
     async def samples(self, from_: Any = None, to: Any = None, fields: Any = None,
                       points: Any = None) -> dict[str, Any]:
         args = self.parse_samples(from_, to, fields, points)
-        return await self._run_db(self._query_samples, *args)
+        snapshot = list(self._buf)      # taken in the event loop; DB I/O runs in a worker thread
+        return await self._run_db(self._query_samples, *args, snapshot)
 
     def _overlay(self, rows: list[dict[str, Any]], d_from: str, d_to: str) -> list[dict[str, Any]]:
         """Replace/add rows with the (newer) in-RAM state of days not yet committed."""
