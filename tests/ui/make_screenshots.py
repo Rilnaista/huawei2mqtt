@@ -40,9 +40,11 @@ def login(page):
     page.wait_for_selector("#btn-auth-label:has-text('Abmelden')")
 
 
-def shot(page, route, name, wait=1200):
+def shot(page, route, name, wait=1200, countdown=False):
     page.goto(URL + "#" + route)
     page.wait_for_timeout(wait)
+    if countdown:  # Countdown mit Zahl abwarten (nicht "Aktualisierung läuft")
+        page.wait_for_function("/\\d+\\s*s/.test(document.getElementById('age').textContent)", timeout=15000)
     page.screenshot(path=str(OUT / name))
     print("ok", name)
 
@@ -68,7 +70,7 @@ def main():
             for scheme in ("light", "dark"):
                 ctx = b.new_context(color_scheme=scheme, **desk)
                 pg = ctx.new_page()
-                shot(pg, "overview", f"overview-{scheme}.png", 1500)
+                shot(pg, "overview", f"overview-{scheme}.png", 1500, countdown=True)
                 if scheme == "light":
                     shot(pg, "values", "values.png")
                     shot(pg, "log", "log.png")
@@ -83,7 +85,7 @@ def main():
                                     color_scheme=scheme, has_touch=True, is_mobile=True)
                 pg = ctx.new_page()
                 if scheme == "light":
-                    shot(pg, "overview", "mobile.png", 1500)
+                    shot(pg, "overview", "mobile.png", 1500, countdown=True)
                 shot(pg, "history", f"history-mobile-{scheme}.png", 2000)
                 shot(pg, "awards", f"awards-mobile-{scheme}.png", 1500)
                 ctx.close()
