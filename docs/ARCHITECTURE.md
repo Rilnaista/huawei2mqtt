@@ -27,6 +27,8 @@ an in-memory cache and a small persistent state:
 | `publish.py` | Topic and payload construction (group JSON with `ts`, flat topics, `null` handling) |
 | `mqtt.py` | MQTT client: LWT, reconnect with back-off, publish queue, set-topic receiver (ignores retained) |
 | `commands.py` | The three setters: validation, rate limit (1 / 2 s), whitelisted writes, `write_access` tracking |
+| `history.py` | SQLite store (`/data/huawei2mqtt.db`, WAL): 10-s samples, daily values, milestones; buffered writes (commit every 60 s), retention, bucketed queries (avg/min/max), MQTT `history/get` |
+| `awards.py` | Pure functions: rankings (top 3), milestones, CO₂ and money from the daily values |
 | `api.py` | aiohttp: portal API + static files from `WEB_DIR` |
 | `config.py` | `.env` overlaid by `DATA_DIR/settings.json` (only the editable fields) |
 | `state.py` | Persistence (`write_access`, last serial number, session secret) and runtime status |
@@ -37,6 +39,9 @@ an in-memory cache and a small persistent state:
 
 - **One Modbus connection, serialised.** The SDongle handles a single client reliably; polls and commands share one lock, with a pause (`MODBUS_REQUEST_DELAY_MS`) between requests.
 - **Block reads.** Registers close to each other are read in one request (gaps up to 16 words are bridged), so a live cycle needs only a few requests.
+- **History without extra load.** History, daily values and awards are fed only from the regular live polls — the bridge never issues additional Modbus requests for them, and never uses Huawei's Modbus file upload (it destabilised an SDongle in testing).
+- **Robust daily values.** At night the inverter still reports yesterday's daily yield and peak; daily values are therefore taken only after production has started that day. Start/end of production count for awards only when the bridge actually observed them.
+- **Gentle error handling.** A request without answer is retried once; only then the bridge reconnects (counted as a drop-out). "Busy" exceptions (0x04/0x06) are no drop-outs. pymodbus' own logging is silenced in favour of one readable line.
 - **Decoupled failures.** Modbus and MQTT reconnect independently; the process never exits because a device is unavailable.
 - **Safety first for writes.** Only whitelisted registers can be written; retained set messages are ignored; shutdown needs an explicit opt-in.
 - **No build step for the portal.** Plain HTML/CSS/JS, no framework, no CDN — works offline, tiny image.
@@ -75,6 +80,13 @@ endpoints return `403`.
 | `PUT /api/settings` | session | Change editable settings (validated, persisted in `/data`) |
 | `POST /api/command` | session | `{"command":"power_limit_pct"\|"power_limit_w"\|"power","value":…}` — same rules as MQTT |
 | `POST /api/write-test` | session | Reads 40125 and writes the same value back |
+| `GET /api/history?from=&to=&fields=a,b&points=N` | – | Bucketed samples: `t[]` (epoch ms) and per field `avg[]`, `min[]`, `max[]`; `available` lists all fields (max. 2000 points, 10 fields) |
+| `GET /api/daily?from=&to=` | – | Daily values (yield, total, peak + time, first/last production, observation flags) |
+| `GET /api/awards` | – | Rankings, milestones, CO₂, money (same JSON as MQTT `…/awards`) |
+| `POST /api/history/clear` | session | `{"scope":"samples"\|"daily"\|"all"}` — clears history only, daily values + milestones, or both |
+
+`GET /api/status` additionally contains `poll` (`live_interval_s`, `last_live_at`, `next_live_at`),
+`inverter.dropouts_24h` / `last_dropout` and `history` (`days`, `samples`, `oldest`, `db_size_bytes`).
 
 ## Persistent data (`/data`)
 
@@ -82,6 +94,7 @@ endpoints return `403`.
 |---|---|
 | `settings.json` | Settings changed in the portal (override `.env`) |
 | `state.json` | `write_access`, last known serial number |
+| `huawei2mqtt.db` | SQLite: `samples` (one row per live poll, kept `HISTORY_DAYS`), `daily` (kept forever), `milestones` |
 | session secret | Signing key for portal sessions (generated on first start) |
 
-Deleting the volume resets the portal settings to `.env` and the write-access status to "unverified".
+Deleting the volume also deletes history, daily values and awards. Deleting it resets the portal settings to `.env` and the write-access status to "unverified".

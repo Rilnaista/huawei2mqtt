@@ -15,6 +15,7 @@ sieben Sprachen.
 
 - 📈 **Alle Daten**: PV-Strings, Netz (3 Phasen), Ertrag, Zustand in Klartext, Temperatur, Isolation, Alarme, Gerätedaten
 - 🎛️ **Steuerung**: Wirkleistung in % oder W begrenzen, Wechselrichter einschalten – und ausschalten, wenn du es ausdrücklich erlaubst
+- 📊 **Verlauf & Awards**: jeder 10-Sekunden-Wert für 7 Tage (einstellbar) im Live-Diagramm; bester Tag/Woche/Monat/Jahr, Spitzenleistung, Meilensteine, eingespartes CO₂ und Ertrag in Euro – alles lokal in SQLite gespeichert und auch per MQTT abfragbar
 - 🛡️ **Robust**: übersteht Ausfälle von Wechselrichter, Dongle oder Broker, verbindet sich selbst neu und überlastet den Dongle nie
 - 🪶 **Schlank**: ein kleiner Python-Prozess, rund 4 Laufzeit-Bibliotheken, ca. 30 MB RAM, ohne Root-Rechte
 - 🍓 **Läuft auf dem Raspberry Pi**: Images für amd64 und arm64 (Raspberry Pi 3/4/5 mit 64-Bit-System)
@@ -51,6 +52,10 @@ sieben Sprachen.
 | Alle Werte | Einstellungen & Bedienung | Protokoll |
 |---|---|---|
 | ![Alle Werte](docs/images/values.png) | ![Einstellungen](docs/images/settings.png) | ![Protokoll](docs/images/log.png) |
+
+| Verlauf | Awards | Awards (Handy, dunkel) |
+|---|---|---|
+| ![Verlauf](docs/images/history-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards Handy](docs/images/awards-mobile-dark.png) |
 
 ## Voraussetzungen
 
@@ -118,10 +123,15 @@ Schlüssel mit Kommentar). Pflicht sind nur `HUAWEI_HOST` und `MQTT_HOST`.
 | `MQTT_FLAT_TOPICS` | `true` | Zusätzlich ein Topic je Einzelwert |
 | `PORTAL_PORT` | `8080` | Host-Port des Portals (Compose-Mapping) |
 | `PORTAL_PASSWORD` | – | Kennwort für Änderungen im Portal. Leer = Portal nur lesbar |
+| `HISTORY_DAYS` | `7` | Wie viele Tage der 10-Sekunden-Verlauf aufbewahrt wird (1–90). Tageswerte/Awards bleiben dauerhaft |
+| `FEED_IN_TARIFF` | `0.08` | Einspeisevergütung pro kWh für den Award „Ertrag in Geld“ |
+| `CURRENCY` | `EUR` | Währungskürzel für Geldbeträge |
+| `CO2_FACTOR` | `0.38` | Eingespartes CO₂ in kg pro kWh (Standard ≈ deutscher Strommix) |
+| `MILESTONE_STEP_KWH` | `1000` | Abstand der Meilensteine beim Gesamtertrag |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `TZ` | `Europe/Berlin` | Zeitzone |
 
-Intervalle, Log-Stufe, Retain und Einzel-Topics lassen sich nach dem Login auch im
+Intervalle, Log-Stufe, Retain, Einzel-Topics, Verlaufstage, Vergütung, Währung, CO₂-Faktor und Meilenstein-Abstand lassen sich nach dem Login auch im
 Portal ändern; diese Änderungen liegen im Volume `/data` und haben Vorrang vor der
 `.env`. Verbindungsdaten und Kennwörter ändert man nur in der `.env` – das Portal
 zeigt Kennwörter nur als „gesetzt / nicht gesetzt“.
@@ -139,13 +149,14 @@ nicht als Einzel-Topic gesendet. Alle Werte sind standardmäßig „retained“.
 | Topic | Intervall | Felder |
 |---|---|---|
 | `…/availability` | LWT | `online` / `offline` (Bridge läuft und ist verbunden) |
-| `…/bridge` | bei Änderung | `inverter` (`online`/`stale`/`offline`), `dongle` (`reachable`/`unreachable`), `write_access` (`verified`/`unverified`/`denied`), `last_success`, `version` |
+| `…/bridge` | bei Änderung | `inverter` (`online`/`stale`/`offline`), `dongle` (`reachable`/`unreachable`), `write_access` (`verified`/`unverified`/`denied`), `last_success`, `version`, `dropouts_24h` (kurze Kommunikations-Aussetzer in den letzten 24 h) |
 | `…/pv` | live | `pv1_voltage_v`, `pv1_current_a`, `pv1_power_w`, `pv2_voltage_v`, `pv2_current_a`, `pv2_power_w`, `input_power_w` |
 | `…/grid` | live | `active_power_w`, `reactive_power_var`, `power_factor`, `frequency_hz`, `voltage_l1_l2_v`, `voltage_l2_l3_v`, `voltage_l3_l1_v`, `voltage_l1_v`, `voltage_l2_v`, `voltage_l3_v`, `current_l1_a`, `current_l2_a`, `current_l3_a` |
-| `…/energy` | live | `daily_yield_kwh`, `total_yield_kwh`, `peak_power_today_w` |
+| `…/energy` | live | `daily_yield_kwh`, `total_yield_kwh`, `peak_power_today_w`, `peak_power_today_ts` (Uhrzeit der heutigen Spitze, `null`, wenn die Bridge da nicht lief) |
 | `…/inverter` | live | `status` (Text-Schlüssel, z. B. `on_grid`, `standby_no_irradiation`), `status_code`, `running`, `efficiency_pct`, `internal_temperature_c`, `insulation_resistance_mohm`, `fault_code`, `alarms` (Liste von Text-Schlüsseln), `alarm_1..3`, `state_1..3` (rohe Bitfelder), `startup_time`, `shutdown_time` |
 | `…/device` | statisch | `model`, `serial_number`, `part_number`, `software_version`, `firmware_version`, `model_id`, `pv_strings`, `mppt_count`, `rated_power_w`, `max_power_w` |
 | `…/control` | statisch + nach jedem Befehl | `power_limit_pct`, `power_limit_w`, `shutdown_allowed` |
+| `…/awards` | beim Start, nach Mitternacht, bei Änderung (höchstens je statisches Intervall) | Ranglisten (Top 3), Meilensteine, CO₂, Geld – gleiches JSON wie `GET /api/awards` |
 | `…/control/result` | nach jedem Befehl | `{"command","value","status":"ok\|rejected\|error","reason","ts"}` (nicht retained) |
 
 **Bedeutung des Status:** `inverter = stale` heißt, die letzte Abfrage ist
@@ -160,6 +171,22 @@ Beispiel `huawei/HV2260000000/pv`:
  "pv2_voltage_v": 622.9, "pv2_current_a": 5.77, "pv2_power_w": 3594,
  "input_power_w": 7814, "ts": "2026-06-21T11:02:10Z"}
 ```
+
+### Verlauf per MQTT abfragen
+
+Eine Anfrage an `…/history/get` senden (nicht retained, höchstens eine je 2 s); die Antwort
+kommt auf `…/history/result` (nicht retained). Antworten kommen immer aus der lokalen
+Datenbank der Bridge – nie aus einer zusätzlichen Modbus-Abfrage.
+
+```bash
+# heutige PV- und Einspeiseleistung, 300 Punkte (Mittel/Min/Max je Punkt)
+mosquitto_pub -t 'huawei/HV2260000000/history/get' -m '{"id":"1","type":"samples","fields":["input_power_w","active_power_w"],"points":300}'
+# Tageswerte eines Zeitraums
+mosquitto_pub -t 'huawei/HV2260000000/history/get' -m '{"id":"2","type":"daily","from":"2026-07-01","to":"2026-07-31"}'
+# Awards
+mosquitto_pub -t 'huawei/HV2260000000/history/get' -m '{"id":"3","type":"awards"}'
+```
+`samples` versteht `from`/`to` (ISO-Zeit, Standard: heute), bis zu 10 `fields` und bis zu 2000 `points`.
 
 ## Befehle
 
@@ -186,12 +213,15 @@ mosquitto_pub -h <broker> -u <benutzer> -P <kennwort> -t 'huawei/HV2260000000/co
 
 ## Web-Portal
 
-- **Übersicht** – aktuelle Leistung, Ertrag, Zustand in Klartext, Strings, Netz, Verbindungsstatus von Wechselrichter, Dongle und Broker, Schreibzugriff.
+- **Übersicht** – aktuelle Leistung, Ertrag, heutige Spitze mit Uhrzeit, Zustand in Klartext, Strings, Netz, Firmware, Verbindungsstatus von Wechselrichter, Dongle und Broker, Schreibzugriff und ein Countdown bis zur nächsten Aktualisierung. Kurze Aussetzer und Ausfälle werden deutlich angezeigt.
+- **Verlauf** – Live-Liniendiagramm beliebiger Werte (heute, 24 h, bis zur eingestellten Zahl von Tagen), Mittelwert-Linie mit Min/Max-Band.
+- **Awards** – Top 3 der Tage, Wochen, Monate, Jahre, Spitzenleistung, längster Sonnentag, frühester Start; Meilensteine, eingespartes CO₂ und Ertrag in Geld. Ohne Smart Meter gilt *Gesamtertrag × Einspeisevergütung* – selbst verbrauchter Strom ist eigentlich mehr wert.
 - **Alle Werte** – jedes Register mit Adresse, Rohwert, umgerechnetem Wert und Einheit; filterbar.
 - **Protokoll** – Live-Protokoll mit Filter nach Stufe.
-- **Einstellungen** – nach dem Login: Leistungsbegrenzung, Ein/Aus, Schreibtest, Intervalle, Log-Stufe, MQTT-Optionen.
+- **Einstellungen** – Sprache (ohne Login) und Anmeldung; nach dem Login: Leistungsbegrenzung, Ein/Aus, Schreibtest, Intervalle, Log-Stufe, MQTT-Optionen, Verlauf/Awards-Optionen und *Speicher leeren* (nur Verlauf, Tageswerte + Awards oder alles).
 
 Ohne `PORTAL_PASSWORD` ist das Portal nur lesbar. Anmeldeversuche sind gebremst.
+**Passwort vergessen?** Es steht als `PORTAL_PASSWORD` in der `.env` – dort ändern und `docker compose up -d` ausführen.
 Der **Schreibtest** liest die aktuelle Leistungsbegrenzung und schreibt denselben Wert
 zurück – so siehst du, ob der Dongle Schreibbefehle annimmt, ohne dass sich etwas ändert.
 
@@ -235,7 +265,11 @@ Ziel im Proxy: `http://huawei2mqtt:8080`.
 | Befehle → `error`, Schreibzugriff `denied` | Modbus TCP am Dongle steht auf *eingeschränkt*; auf *Aktivieren (uneingeschränkt)* stellen |
 | `rejected: shutdown_not_allowed` | `HUAWEI_ALLOW_SHUTDOWN=true` setzen, wenn Fernabschaltung wirklich gewünscht ist |
 | Broker `disconnected` | `MQTT_HOST`, Port, Zugangsdaten, TLS prüfen; die Bridge versucht es mit wachsenden Abständen erneut (2 s … 60 s) |
+| Dongle lange nicht erreichbar, auch FusionSolar zeigt keine Daten | Der SDongle hängt (erkennbar: im WLAN angemeldet, aber ohne IP-Adresse). Wechselrichter stromlos machen: AC-Leitungsschutzschalter **aus**, dann DC-Schalter **aus**, mind. 5 min warten, AC **ein**, dann DC **ein**. Die Bridge verbindet sich danach selbst neu |
+| „x kurze Aussetzer in 24 h“ | Der Dongle hat eine Anfrage nicht rechtzeitig beantwortet; die Bridge hat wiederholt bzw. neu verbunden. Vereinzelt harmlos, gehäuft oft schwaches WLAN |
 | Leistungsbegrenzung springt von selbst zurück | FusionSolar-App/-Cloud oder Netzbetreiber-Steuerung überschreibt sie |
+
+Verlauf, Tageswerte und Awards liegen in `/data/huawei2mqtt.db` (SQLite) – das Volume `/data` bei Updates behalten.
 
 Mit `LOG_LEVEL=DEBUG` gibt es ausführliche Modbus-/MQTT-Protokolle (Kennwörter werden nie protokolliert).
 
