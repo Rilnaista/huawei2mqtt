@@ -1,9 +1,10 @@
-"""History store (SQLite, stdlib): samples / daily / milestones. Contract: topic-spec rc2.
+"""History store (SQLite, stdlib): samples / samples_5m / daily / milestones. Contract: topic-spec rc2+rc3.
 
 * Fed ONLY from successful LIVE cycles (``record``) - no extra Modbus traffic.
 * RAM buffer, committed every ``flush_interval`` s (60) and at shutdown (SD card friendly).
 * All DB I/O runs in a worker thread (asyncio.to_thread); DB errors are never fatal.
-* ``daily`` is kept forever (basis of the awards); ``samples`` only ``history_days``.
+* ``daily`` and ``samples_5m`` are kept forever. ``samples`` (10 s) older than ``history_days``
+  are condensed into 5-minute means in ``samples_5m`` (rc3) instead of being deleted.
 * ``daily.start_observed`` / ``end_observed`` (INTEGER 0/1, NULL = unknown): production start/end
   were really observed. Rule: start observed = this day a NON-producing sample (input_power_w <= 0)
   was seen before the first producing one; end observed = a producing sample was directly followed
@@ -42,6 +43,8 @@ MAX_DAILY_SPAN = 3660
 DEFAULT_DAILY_SPAN = 31
 BUFFER_CAP = 5000            # samples kept in RAM while the DB is failing
 MAX_MILESTONES_PER_SAMPLE = 50
+BUCKET_S = 300               # samples_5m resolution
+COMPACT_CHUNK_S = 86400      # one transaction per day of backlog
 
 _NUMERIC_DERIVED = {"pv1_power_w": "W", "pv2_power_w": "W", "running": ""}
 _IDENT = re.compile(r"^[a-z0-9_]+$")
@@ -147,11 +150,12 @@ class History:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             cols = ", ".join(f'"{n}" REAL' for n in FIELD_NAMES)
-            conn.execute(f"CREATE TABLE IF NOT EXISTS samples (ts INTEGER PRIMARY KEY, {cols})")
-            have = {r[1] for r in conn.execute("PRAGMA table_info(samples)")}
-            for n in FIELD_NAMES:
-                if n not in have:
-                    conn.execute(f'ALTER TABLE samples ADD COLUMN "{n}" REAL')
+            for tbl in ("samples", "samples_5m"):
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {tbl} (ts INTEGER PRIMARY KEY, {cols})")
+                have = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")}
+                for n in FIELD_NAMES:
+                    if n not in have:
+                        conn.execute(f'ALTER TABLE {tbl} ADD COLUMN "{n}" REAL')
             conn.execute("CREATE TABLE IF NOT EXISTS daily (date TEXT PRIMARY KEY, yield_kwh REAL, "
                          "total_yield_kwh REAL, peak_power_w REAL, peak_ts INTEGER, "
                          "first_production_ts INTEGER, last_production_ts INTEGER, "
@@ -221,45 +225,85 @@ class History:
         if last:
             self._last_total = last[0]
 
-    def _purge(self, cutoff: int) -> int:
+    def _compact_chunk(self, cutoff: int) -> int:
+        """Condense the oldest day of ``samples`` older than ``cutoff`` (multiple of 300) into
+        ``samples_5m`` (existing buckets win) and delete it; one transaction. Returns rows moved."""
         with self._lock:
             c = self._db()
-            n = c.execute("DELETE FROM samples WHERE ts < ?", (cutoff,)).rowcount
-            c.commit()
+            m = c.execute("SELECT MIN(ts) FROM samples WHERE ts < ?", (cutoff,)).fetchone()[0]
+            if m is None:
+                return 0
+            start = m // BUCKET_S * BUCKET_S
+            end = min(start + COMPACT_CHUNK_S, cutoff)
+            names = ", ".join(f'"{n}"' for n in FIELD_NAMES)
+            avgs = ", ".join(f'AVG("{n}")' for n in FIELD_NAMES)
+            try:
+                c.execute(f"INSERT OR IGNORE INTO samples_5m (ts, {names}) "
+                          f"SELECT (ts / {BUCKET_S}) * {BUCKET_S}, {avgs} FROM samples "
+                          f"WHERE ts >= ? AND ts < ? GROUP BY ts / {BUCKET_S}", (start, end))
+                n = c.execute("DELETE FROM samples WHERE ts >= ? AND ts < ?", (start, end)).rowcount
+                c.commit()
+            except Exception:
+                c.rollback()
+                raise
             return n
 
     def _collect_stats(self) -> dict[str, Any]:
         with self._lock:
             c = self._db()
-            n, oldest = c.execute("SELECT COUNT(*), MIN(ts) FROM samples").fetchone()
+            n, detail = c.execute("SELECT COUNT(*), MIN(ts) FROM samples").fetchone()
+            n5, old5 = c.execute("SELECT COUNT(*), MIN(ts) FROM samples_5m").fetchone()
         size = 0
         for suffix in ("", "-wal"):
             try:
                 size += self.path.with_name(self.path.name + suffix).stat().st_size
             except OSError:
                 pass
-        return {"samples": n, "oldest": aw.iso(oldest), "db_size_bytes": size}
+        olds = [x for x in (detail, old5) if x is not None]
+        return {"samples": n, "samples_5m": n5, "oldest": aw.iso(min(olds) if olds else None),
+                "detail_oldest": aw.iso(detail), "db_size_bytes": size}
 
-    def _query_samples(self, f: int, t: int, fields: list[str], points: int,
-                       buf: list[tuple[int, dict[str, Any]]] | None = None) -> dict[str, Any]:
-        """DB buckets (avg/min/max) merged with ``buf`` (snapshot of not yet committed rows)."""
-        step = (t - f) / points
+    def _bucket_acc(self, table: str, f: int, t: int, step: float, points: int,
+                    fields: list[str], acc: dict[tuple[int, str], list[float]]) -> None:
         sel = ", ".join(f'AVG("{n}"), MIN("{n}"), MAX("{n}"), COUNT("{n}")' for n in fields)
-        sql = (f"SELECT MIN(CAST((ts - ?) / ? AS INTEGER), ?) AS b, {sel} FROM samples "
+        sql = (f"SELECT MIN(CAST((ts - ?) / ? AS INTEGER), ?) AS b, {sel} FROM {table} "
                "WHERE ts >= ? AND ts <= ? GROUP BY b")
-        series = {n: {"avg": [None] * points, "min": [None] * points, "max": [None] * points}
-                  for n in fields}
         with self._lock:
             rows = self._db().execute(sql, (f, step, points - 1, f, t)).fetchall()
-        # acc[(bucket, field)] = [sum, min, max, count]
-        acc: dict[tuple[int, str], list[float]] = {}
         for row in rows:
             b = row[0]
             for i, n in enumerate(fields):
                 avg, lo, hi, cnt = row[1 + 4 * i: 5 + 4 * i]
                 if avg is None or not cnt:
                     continue
-                acc[(b, n)] = [avg * cnt, lo, hi, cnt]
+                a = acc.get((b, n))
+                if a is None:
+                    acc[(b, n)] = [avg * cnt, lo, hi, cnt]
+                else:
+                    a[0] += avg * cnt
+                    a[1] = min(a[1], lo)
+                    a[2] = max(a[2], hi)
+                    a[3] += cnt
+
+    def _query_samples(self, f: int, t: int, fields: list[str], points: int,
+                       buf: list[tuple[int, dict[str, Any]]] | None = None) -> dict[str, Any]:
+        """DB buckets (avg/min/max) merged with ``buf`` (snapshot of not yet committed rows)."""
+        step = (t - f) / points
+        series = {n: {"avg": [None] * points, "min": [None] * points, "max": [None] * points}
+                  for n in fields}
+        with self._lock:
+            detail = self._db().execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+        buf_min = min((ts for ts, _ in buf or ()), default=None)
+        cands = [x for x in (detail, buf_min) if x is not None]
+        d0 = min(cands) if cands else None          # oldest fine-resolution timestamp
+        # acc[(bucket, field)] = [sum, min, max, count]
+        acc: dict[tuple[int, str], list[float]] = {}
+        if d0 is None or d0 > f:
+            self._bucket_acc("samples_5m", f, t if d0 is None else min(t, d0 - 1),
+                             step, points, fields, acc)
+        if d0 is not None and d0 <= t:
+            self._bucket_acc("samples", f, t, step, points, fields, acc)
+        res = 300 if (d0 is None or d0 > t) else (10 if d0 <= f else "mixed")
         for ts, r in buf or ():
             if ts < f or ts > t:
                 continue
@@ -282,7 +326,7 @@ class History:
             series[n]["max"][b] = round(hi, 3)
         return {"from": aw.iso(f), "to": aw.iso(t), "step_s": _fmt_step(step), "fields": fields,
                 "t": [int((f + i * step) * 1000) for i in range(points)], "series": series,
-                "available": AVAILABLE}
+                "resolution_s": res, "available": AVAILABLE}
 
     def _query_daily(self, d_from: str, d_to: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -299,11 +343,12 @@ class History:
         return [{"kwh": k, "ts": t} for k, t in rows]
 
     def _clear(self, scope: str) -> dict[str, int]:
-        out = {"samples": 0, "daily": 0, "milestones": 0}
+        out = {"samples": 0, "samples_5m": 0, "daily": 0, "milestones": 0}
         with self._lock:
             c = self._db()
             if scope in ("samples", "all"):
                 out["samples"] = c.execute("DELETE FROM samples").rowcount
+                out["samples_5m"] = c.execute("DELETE FROM samples_5m").rowcount
             if scope in ("daily", "all"):
                 out["daily"] = c.execute("DELETE FROM daily").rowcount
                 out["milestones"] = c.execute("DELETE FROM milestones").rowcount
@@ -429,13 +474,20 @@ class History:
             self._ms_buf = ms + self._ms_buf
 
     async def purge(self) -> None:
-        cutoff = int(self._now().timestamp()) - int(self.cfg.history_days) * 86400
+        """Condense old fine samples into 5-minute means (nothing is deleted; name kept)."""
+        now = int(self._now().timestamp())
+        cutoff = (now - int(self.cfg.history_days) * 86400) // BUCKET_S * BUCKET_S
+        total = 0
         try:
-            n = await asyncio.to_thread(self._purge, cutoff)
-            if n:
-                log.info("history: removed %d old samples", n)
+            while True:
+                n = await asyncio.to_thread(self._compact_chunk, cutoff)
+                if not n:
+                    break
+                total += n
+            if total:
+                log.info("history: condensed %d samples into 5-minute values", total)
         except Exception as exc:  # noqa: BLE001
-            self._warn_failure("purge", exc)
+            self._warn_failure("compaction", exc)
 
     async def _refresh_stats(self) -> None:
         try:

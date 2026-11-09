@@ -57,6 +57,7 @@ class App:
         self._last_hist_req: float | None = None
         self._awards_sig: str | None = None
         self._awards_at: float | None = None
+        self._live_ok_seen = False      # awards are published only after the first good LIVE cycle
 
     # -- callbacks ---------------------------------------------------------------
     def _subscriptions(self, base: str) -> list[str]:
@@ -75,10 +76,12 @@ class App:
         now = self.rt.clock()
         if self._last_hist_req is not None and now - self._last_hist_req < 2.0:
             try:
-                rid = json.loads(payload).get("id")
+                req = json.loads(payload)
+                rid, typ = req.get("id"), req.get("type")
             except (ValueError, AttributeError, UnicodeDecodeError):
-                rid = None
-            result = {"id": rid if isinstance(rid, (str, int)) else None, "type": None,
+                rid, typ = None, None
+            result = {"id": rid if isinstance(rid, (str, int)) else None,
+                      "type": typ if isinstance(typ, str) else None,
                       "status": "rejected", "reason": "rate_limited"}
         else:
             self._last_hist_req = now
@@ -110,7 +113,8 @@ class App:
 
     async def _on_mqtt_connected(self) -> None:
         self.pub.publish_snapshot()
-        await self._publish_awards(force=True)
+        if self._live_ok_seen:
+            await self._publish_awards(force=True)
 
     async def _on_cycle(self, klass: str, ok: bool) -> None:
         if ok and klass == rg.STATIC:
@@ -123,7 +127,8 @@ class App:
                 self._record_history()
             self.pub.publish_class(rg.LIVE)
             rolled, self.history.day_rolled = self.history.day_rolled, False
-            await self._publish_awards(force=rolled)
+            first, self._live_ok_seen = not self._live_ok_seen, True
+            await self._publish_awards(force=rolled or first)
         if klass == rg.LIVE:
             self.pub.publish_bridge()
 

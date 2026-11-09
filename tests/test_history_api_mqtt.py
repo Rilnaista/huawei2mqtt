@@ -86,7 +86,7 @@ async def test_clear_requires_login_and_scopes(env):
     r = await c.post("/api/history/clear", json={"scope": "bogus"})
     assert r.status == 400
     r = await (await c.post("/api/history/clear", json={"scope": "samples"})).json()
-    assert r == {"status": "ok", "deleted": {"samples": 6, "daily": 0, "milestones": 0}}
+    assert r == {"status": "ok", "deleted": {"samples": 6, "samples_5m": 0, "daily": 0, "milestones": 0}}
     r = await (await c.post("/api/history/clear", json={"scope": "all"})).json()
     assert r["deleted"]["daily"] == 1
     a = await (await c.get("/api/awards")).json()
@@ -110,13 +110,13 @@ async def test_status_and_settings_extensions(env, rt, cache, cfg):
     assert st["poll"]["live_interval_s"] == 10
     assert st["poll"]["last_live_at"].endswith("Z") and st["poll"]["next_live_at"].endswith("Z")
     assert st["inverter"]["dropouts_24h"] == 1 and st["inverter"]["last_dropout"].endswith("Z")
-    assert st["history"]["days"] == 7 and st["history"]["samples"] == 6
+    assert st["history"]["days"] == 90 and st["history"]["samples"] == 6
     assert st["history"]["oldest"] and st["history"]["db_size_bytes"] > 0
     s = await (await c.get("/api/settings")).json()
     assert s["readonly"]["firmware_version"] == "V100R001C00B352"
     assert s["readonly"]["software_version"] == "V100R001-02"
-    assert s["editable"]["history_days"] == 7 and s["editable"]["currency"] == "EUR"
-    assert s["limits"]["history_days"] == {"min": 1, "max": 90}
+    assert s["editable"]["history_days"] == 90 and s["editable"]["currency"] == "EUR"
+    assert s["limits"]["history_days"] == {"min": 1, "max": 365}
 
 
 async def test_put_settings_new_fields(env, cfg):
@@ -131,7 +131,7 @@ async def test_put_settings_new_fields(env, cfg):
 
 
 def test_settings_validation():
-    ok, err = validate_editable({"history_days": 90, "feed_in_tariff": 0, "currency": "EUR",
+    ok, err = validate_editable({"history_days": 365, "feed_in_tariff": 0, "currency": "EUR",
                                  "co2_factor": 2, "milestone_step_kwh": 100})
     assert not err and ok["feed_in_tariff"] == 0.0
     bad = {"history_days": 0, "feed_in_tariff": 5.1, "currency": "eur", "co2_factor": -1,
@@ -147,12 +147,12 @@ def test_env_keys_and_defaults(tmp_path):
     base = {"HUAWEI_HOST": "h", "MQTT_HOST": "m", "DATA_DIR": str(tmp_path)}
     c = Config.from_env(base)
     assert (c.history_days, c.feed_in_tariff, c.currency, c.co2_factor, c.milestone_step_kwh) == \
-        (7, 0.08, "EUR", 0.38, 1000)
+        (90, 0.08, "EUR", 0.38, 1000)
     c = Config.from_env({**base, "HISTORY_DAYS": "30", "FEED_IN_TARIFF": "0.081",
                          "CURRENCY": "USD", "CO2_FACTOR": "0.5", "MILESTONE_STEP_KWH": "250"})
     assert (c.history_days, c.feed_in_tariff, c.currency, c.co2_factor, c.milestone_step_kwh) == \
         (30, 0.081, "USD", 0.5, 250)
-    for bad in ({"HISTORY_DAYS": "91"}, {"CURRENCY": "euro"}, {"FEED_IN_TARIFF": "9"},
+    for bad in ({"HISTORY_DAYS": "366"}, {"CURRENCY": "euro"}, {"FEED_IN_TARIFF": "9"},
                 {"MILESTONE_STEP_KWH": "10"}):
         with pytest.raises(ConfigError):
             Config.from_env({**base, **bad})
@@ -216,7 +216,7 @@ async def test_mqtt_retained_ignored_and_rate_limit(app, clock):
     assert res["status"] == "ok"
     clock.t += 1.9
     (_, res, _), = await ask(app, {"id": "2", "type": "daily"})
-    assert res == {"id": "2", "type": None, "status": "rejected", "reason": "rate_limited"}
+    assert res == {"id": "2", "type": "daily", "status": "rejected", "reason": "rate_limited"}
     clock.t += 0.2
     (_, res, _), = await ask(app, {"id": "3", "type": "daily"})
     assert res["status"] == "ok"
@@ -282,3 +282,25 @@ async def test_end_to_end_live_cycle_feeds_history_and_publishes(cfg):
     assert db.execute("SELECT input_power_w FROM samples").fetchone()[0] == 3500
     db.close()
     assert len(dev.reads) == modbus_reads                                      # history = no extra reads
+
+
+async def test_rate_limited_carries_request_type(app, clock):
+    await ask(app, {"id": "1", "type": "daily"})
+    clock.t += 0.5
+    (_, res, _), = await ask(app, {"id": "2", "type": "samples"})
+    assert res == {"id": "2", "type": "samples", "status": "rejected", "reason": "rate_limited"}
+    clock.t += 0.5
+    (_, res, _), = await ask(app, b"garbage")
+    assert res["type"] is None and res["reason"] == "rate_limited"
+
+
+async def test_awards_only_after_first_live_cycle(app, clock):
+    app.mqtt.publish = lambda t, p, r, qos=None: app.sent.append((t, p, r))   # raw payloads
+    await app._on_mqtt_connected()
+    assert not any(t.endswith("/awards") for t, _, _ in app.sent)   # not at connect
+    app.sent.clear()
+    await app._on_cycle("live", True)
+    assert [t for t, _, _ in app.sent if t.endswith("/awards")] == [f"{BASE}/awards"]
+    app.sent.clear()
+    await app._on_mqtt_connected()                                   # reconnect after live ok
+    assert any(t.endswith("/awards") for t, _, _ in app.sent)

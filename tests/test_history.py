@@ -112,18 +112,6 @@ async def test_start_with_unusable_dir_survives(cfg, now, tmp_path):
     await h.close()
 
 
-async def test_retention_purge(cfg, hist, now):
-    cfg.history_days = 2
-    for days_ago in (5, 3, 1, 0):
-        hist.record(now.t - timedelta(days=days_ago), vals())
-    await hist.flush()
-    await hist.purge()
-    left = rows(cfg, "SELECT ts FROM samples ORDER BY ts")
-    assert [r[0] for r in left] == [int((now.t - timedelta(days=d)).timestamp()) for d in (1, 0)]
-    await hist.flush()
-    assert rows(cfg, "SELECT COUNT(*) FROM daily")[0][0] == 4       # daily is never purged
-
-
 async def test_day_change_uses_local_time(cfg, hist):
     # 22:30 UTC on 30 Jun = 00:30 local (CEST) on 1 Jul -> next local day
     hist.record(T(2026, 6, 30, 21, 30), vals(daily_yield_kwh=50))       # 23:30 local, 30 Jun
@@ -300,16 +288,16 @@ async def test_clear_scopes(cfg, hist, now):
     hist.record(now.t, vals(total_yield_kwh=999.0))
     hist.record(now.t + timedelta(seconds=10), vals(total_yield_kwh=1001.0))
     await hist.flush()
-    assert (await hist.clear("samples"))["deleted"] == {"samples": 2, "daily": 0, "milestones": 0}
+    assert (await hist.clear("samples"))["deleted"] == {"samples": 2, "samples_5m": 0, "daily": 0, "milestones": 0}
     assert rows(cfg, "SELECT COUNT(*) FROM daily")[0][0] == 1
     hist.record(now.t + timedelta(seconds=20), vals())
     r = await hist.clear("all")
-    assert r["status"] == "ok" and r["deleted"] == {"samples": 0, "daily": 1, "milestones": 1}
+    assert r["status"] == "ok" and r["deleted"] == {"samples": 0, "samples_5m": 0, "daily": 1, "milestones": 1}
     assert hist._buf == [] and hist._dirty == {}
     hist.record(now.t + timedelta(seconds=30), vals())
     await hist.flush()
     r = await hist.clear("daily")
-    assert r["deleted"] == {"samples": 0, "daily": 1, "milestones": 0}
+    assert r["deleted"] == {"samples": 0, "samples_5m": 0, "daily": 1, "milestones": 0}
     assert rows(cfg, "SELECT COUNT(*) FROM samples")[0][0] == 1
     with pytest.raises(RequestError):
         await hist.clear("bogus")
@@ -320,7 +308,7 @@ async def test_status(cfg, hist, now):
     await hist.flush()
     await hist._refresh_stats()
     st = hist.status()
-    assert st["days"] == 7 and st["samples"] == 1 and st["oldest"] == "2026-07-01T12:00:00Z"
+    assert st["days"] == 90 and st["samples"] == 1 and st["samples_5m"] == 0 and st["oldest"] == "2026-07-01T12:00:00Z"
     assert st["db_size_bytes"] > 0
 
 

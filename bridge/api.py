@@ -160,7 +160,8 @@ class Api:
                      "last_live_at": iso(rt.last_live_at) if rt.last_live_at else None,
                      "next_live_at": iso(rt.next_live_at) if rt.next_live_at else None},
             "history": self.history.status() if self.history else
-            {"days": c.history_days, "samples": 0, "oldest": None, "db_size_bytes": 0},
+            {"days": c.history_days, "samples": 0, "samples_5m": 0, "oldest": None,
+             "detail_oldest": None, "db_size_bytes": 0},
             "dongle": {"state": rt.dongle, "host": c.huawei_host, "port": c.huawei_port,
                        "unit_id": c.huawei_unit_id},
             "mqtt": {"state": "connected" if rt.mqtt_connected else "disconnected",

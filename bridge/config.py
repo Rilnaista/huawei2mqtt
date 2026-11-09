@@ -22,7 +22,7 @@ LIMITS: dict[str, dict[str, Any]] = {
     "log_level": {"values": list(LOG_LEVELS)},
     "mqtt_retain": {"type": "bool"},
     "mqtt_flat_topics": {"type": "bool"},
-    "history_days": {"min": 1, "max": 90},
+    "history_days": {"min": 1, "max": 365},
     "feed_in_tariff": {"min": 0, "max": 5},
     "currency": {"pattern": "^[A-Z]{3}$"},
     "co2_factor": {"min": 0, "max": 2},
@@ -161,7 +161,7 @@ class Config:
     log_level: str = "INFO"
     mqtt_retain: bool = True
     mqtt_flat_topics: bool = True
-    history_days: int = 7
+    history_days: int = 90
     feed_in_tariff: float = 0.08
     currency: str = "EUR"
     co2_factor: float = 0.38
@@ -208,7 +208,7 @@ class Config:
             log_level=level,
             mqtt_retain=_bool(env, "MQTT_RETAIN", True),
             mqtt_flat_topics=_bool(env, "MQTT_FLAT_TOPICS", True),
-            history_days=_int(env, "HISTORY_DAYS", 7, 1, 90),
+            history_days=_int(env, "HISTORY_DAYS", 90, 1, 365),
             feed_in_tariff=_float(env, "FEED_IN_TARIFF", 0.08, 0, 5),
             currency=_s(env, "CURRENCY", "EUR"),
             co2_factor=_float(env, "CO2_FACTOR", 0.38, 0, 2),
