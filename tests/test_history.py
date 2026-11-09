@@ -59,7 +59,7 @@ async def test_schema_columns_and_no_strings(cfg, hist):
     assert {"input_power_w", "pv1_power_w", "running", "daily_yield_kwh"} <= set(cols)
     assert [r[1] for r in rows(cfg, "PRAGMA table_info(daily)")] == [
         "date", "yield_kwh", "total_yield_kwh", "peak_power_w", "peak_ts",
-        "first_production_ts", "last_production_ts", "source"]
+        "first_production_ts", "last_production_ts", "source", "start_observed", "end_observed"]
     assert [r[1] for r in rows(cfg, "PRAGMA table_info(milestones)")] == ["kwh", "ts"]
     assert rows(cfg, "PRAGMA journal_mode")[0][0] == "wal"
 
@@ -286,7 +286,7 @@ async def test_daily_query_defaults_limit_and_overlay(cfg, hist, now):
     assert d["days"][1]["yield_kwh"] == 6
     assert set(d["days"][0]) == {"date", "yield_kwh", "total_yield_kwh", "peak_power_w", "peak_ts",
                                  "first_production_ts", "last_production_ts", "production_s",
-                                 "source"}
+                                 "source", "start_observed", "end_observed"}
     one = await hist.daily("2026-06-30", "2026-06-30")
     assert len(one["days"]) == 1
     with pytest.raises(RequestError) as e:
@@ -368,3 +368,79 @@ async def test_restart_keeps_stored_day_values(cfg, now):
     await h2.close()
     r = rows(cfg, "SELECT yield_kwh, peak_power_w, peak_ts, first_production_ts FROM daily")
     assert r == [(25.0, 7000.0, int(T(2026, 7, 1, 11).timestamp()), int(T(2026, 7, 1, 10).timestamp()))]
+
+
+# --- REQ-025: observed production start/end -----------------------------------------------
+def _flags(cfg):
+    return rows(cfg, "SELECT start_observed, end_observed FROM daily ORDER BY date")
+
+
+async def test_start_mid_production_not_observed(cfg, hist, now):
+    hist.record(T(2026, 7, 1, 9), vals())
+    hist.record(T(2026, 7, 1, 9, 0, 10), vals())
+    hist.record(T(2026, 7, 1, 17), vals(input_power_w=0))
+    await hist.flush()
+    assert _flags(cfg) == [(0, 1)]
+    now.t = T(2026, 7, 1, 18)
+    d = (await hist.daily())["days"][0]
+    assert d["start_observed"] is False and d["end_observed"] is True and d["production_s"] is None
+    a = await hist.awards(None)
+    assert a["rankings"]["longest_day"] == [] and a["rankings"]["earliest_start"] == []
+
+
+async def test_full_day_observed(cfg, hist, now):
+    hist.record(T(2026, 7, 1, 2), vals(input_power_w=0))
+    hist.record(T(2026, 7, 1, 5), vals())
+    hist.record(T(2026, 7, 1, 12), vals())
+    hist.record(T(2026, 7, 1, 19), vals(input_power_w=0))
+    await hist.flush()
+    assert _flags(cfg) == [(1, 1)]
+    d = (await hist.daily())["days"][0]
+    assert d["start_observed"] and d["end_observed"] and d["production_s"] == 7 * 3600
+    a = await hist.awards(None)
+    assert a["rankings"]["longest_day"][0]["value"] == 7 * 3600
+    assert len(a["rankings"]["earliest_start"]) == 1
+
+
+async def test_restart_keeps_start_observed(cfg, now):
+    h = History(cfg, "Europe/Berlin", now=now)
+    await h.start()
+    h.record(T(2026, 7, 1, 2), vals(input_power_w=0))
+    h.record(T(2026, 7, 1, 5), vals())
+    await h.close()
+    now.t = T(2026, 7, 1, 12)
+    h2 = History(cfg, "Europe/Berlin", now=now)
+    await h2.start()
+    h2.record(T(2026, 7, 1, 12), vals())
+    h2.record(T(2026, 7, 1, 19), vals(input_power_w=0))   # first sample after restart is producing
+    await h2.close()
+    assert _flags(cfg) == [(1, 1)]
+
+
+async def test_production_resume_resets_end(cfg, hist):
+    hist.record(T(2026, 7, 1, 2), vals(input_power_w=0))
+    hist.record(T(2026, 7, 1, 5), vals())
+    hist.record(T(2026, 7, 1, 11), vals(input_power_w=0))   # cloud
+    hist.record(T(2026, 7, 1, 12), vals())
+    await hist.flush()
+    assert _flags(cfg) == [(1, 0)]
+
+
+async def test_import_row_without_flags_counts(cfg, now):
+    h = History(cfg, "Europe/Berlin", now=now)
+    await h.start()
+    await h.close()
+    c = sqlite3.connect(cfg.data_dir / hs.DB_NAME)
+    c.execute("INSERT INTO daily (date, yield_kwh, first_production_ts, last_production_ts, source) "
+              "VALUES ('2026-06-01', 40, ?, ?, 'import')",
+              (int(T(2026, 6, 1, 4).timestamp()), int(T(2026, 6, 1, 18).timestamp())))
+    c.commit()
+    c.close()
+    h = History(cfg, "Europe/Berlin", now=now)
+    await h.start()
+    d = (await h.daily("2026-06-01", "2026-06-01"))["days"][0]
+    assert d["start_observed"] and d["end_observed"] and d["production_s"] == 14 * 3600
+    a = await h.awards(None)
+    assert a["rankings"]["longest_day"][0]["value"] == 14 * 3600
+    assert a["rankings"]["earliest_start"][0]["date"] == "2026-06-01"
+    await h.close()

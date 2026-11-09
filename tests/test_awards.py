@@ -15,7 +15,8 @@ def ep(y, m, d, hh, mm):          # local Berlin wall clock -> epoch
 
 def day(date, y, peak=None, a=None, b=None, pts=None):
     return {"date": date, "yield_kwh": y, "total_yield_kwh": None, "peak_power_w": peak,
-            "peak_ts": pts, "first_production_ts": a, "last_production_ts": b, "source": "bridge"}
+            "peak_ts": pts, "first_production_ts": a, "last_production_ts": b, "source": "bridge",
+            "start_observed": 1 if a else 0, "end_observed": 1 if b else 0}
 
 
 def run(rows, ms=(), total=21308.0, **kw):

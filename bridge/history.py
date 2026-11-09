@@ -4,6 +4,14 @@
 * RAM buffer, committed every ``flush_interval`` s (60) and at shutdown (SD card friendly).
 * All DB I/O runs in a worker thread (asyncio.to_thread); DB errors are never fatal.
 * ``daily`` is kept forever (basis of the awards); ``samples`` only ``history_days``.
+* ``daily.start_observed`` / ``end_observed`` (INTEGER 0/1, NULL = unknown): production start/end
+  were really observed. Rule: start observed = this day a NON-producing sample (input_power_w <= 0)
+  was seen before the first producing one; end observed = a producing sample was directly followed
+  (same process run, same day) by a non-producing one; later production resets it to 0. A bridge
+  start in the middle of production therefore yields 0. ``first/last_production_ts`` stay internal
+  (they also gate "daily values only after production start"). NULL flags count as observed only
+  for ``source='import'`` rows that have the respective timestamps; an importer may also set the
+  flags explicitly to 1.
 """
 
 from __future__ import annotations
@@ -102,6 +110,8 @@ class History:
         self._dirty: dict[str, dict[str, Any]] = {}
         self._day: dict[str, Any] | None = None
         self._seen = False
+        self._nonprod_date: str | None = None   # day on which a non-producing sample was seen
+        self._prev_prod = False                 # previous sample (this run) was producing
         self._last_total: float | None = None
         self.day_rolled = False
         self._stop = asyncio.Event()
@@ -145,7 +155,12 @@ class History:
             conn.execute("CREATE TABLE IF NOT EXISTS daily (date TEXT PRIMARY KEY, yield_kwh REAL, "
                          "total_yield_kwh REAL, peak_power_w REAL, peak_ts INTEGER, "
                          "first_production_ts INTEGER, last_production_ts INTEGER, "
-                         "source TEXT NOT NULL DEFAULT 'bridge')")
+                         "source TEXT NOT NULL DEFAULT 'bridge', "
+                         "start_observed INTEGER, end_observed INTEGER)")
+            have_d = {r[1] for r in conn.execute("PRAGMA table_info(daily)")}
+            for n in ("start_observed", "end_observed"):
+                if n not in have_d:
+                    conn.execute(f"ALTER TABLE daily ADD COLUMN {n} INTEGER")
             conn.execute("CREATE TABLE IF NOT EXISTS milestones (kwh INTEGER PRIMARY KEY, "
                          "ts INTEGER)")
             conn.commit()
@@ -173,15 +188,18 @@ class History:
                 for d in days.values():
                     c.execute(
                         "INSERT INTO daily (date, yield_kwh, total_yield_kwh, peak_power_w, "
-                        "peak_ts, first_production_ts, last_production_ts, source) "
-                        "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
+                        "peak_ts, first_production_ts, last_production_ts, source, "
+                        "start_observed, end_observed) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
                         "yield_kwh=excluded.yield_kwh, total_yield_kwh=excluded.total_yield_kwh, "
                         "peak_power_w=excluded.peak_power_w, peak_ts=excluded.peak_ts, "
                         "first_production_ts=excluded.first_production_ts, "
-                        "last_production_ts=excluded.last_production_ts, source=excluded.source",
+                        "last_production_ts=excluded.last_production_ts, source=excluded.source, "
+                        "start_observed=excluded.start_observed, "
+                        "end_observed=excluded.end_observed",
                         (d["date"], d["yield_kwh"], d["total_yield_kwh"], d["peak_power_w"],
                          d["peak_ts"], d["first_production_ts"], d["last_production_ts"],
-                         d["source"]))
+                         d["source"], d.get("start_observed"), d.get("end_observed")))
                 if ms:
                     c.executemany("INSERT OR IGNORE INTO milestones (kwh, ts) VALUES (?, ?)", ms)
                 c.commit()
@@ -193,7 +211,8 @@ class History:
         with self._lock:
             c = self._db()
             row = c.execute("SELECT date, yield_kwh, total_yield_kwh, peak_power_w, peak_ts, "
-                            "first_production_ts, last_production_ts, source FROM daily "
+                            "first_production_ts, last_production_ts, source, start_observed, end_observed "
+                "FROM daily "
                             "WHERE date=?", (today,)).fetchone()
             last = c.execute("SELECT total_yield_kwh FROM daily WHERE total_yield_kwh IS NOT NULL "
                              "ORDER BY date DESC LIMIT 1").fetchone()
@@ -269,7 +288,8 @@ class History:
         with self._lock:
             rows = self._db().execute(
                 "SELECT date, yield_kwh, total_yield_kwh, peak_power_w, peak_ts, "
-                "first_production_ts, last_production_ts, source FROM daily "
+                "first_production_ts, last_production_ts, source, start_observed, end_observed "
+                "FROM daily "
                 "WHERE date >= ? AND date <= ? ORDER BY date", (d_from, d_to)).fetchall()
         return [dict(zip(_DAY_KEYS, r)) for r in rows]
 
@@ -306,7 +326,7 @@ class History:
     def _new_day(self, d: str) -> dict[str, Any]:
         return {"date": d, "yield_kwh": None, "total_yield_kwh": None, "peak_power_w": None,
                 "peak_ts": None, "first_production_ts": None, "last_production_ts": None,
-                "source": "bridge"}
+                "source": "bridge", "start_observed": 0, "end_observed": 0}
 
     def record(self, ts: datetime, v: dict[str, Any]) -> None:
         """One successful LIVE cycle. ``v`` = flat dict of the LIVE group fields."""
@@ -321,7 +341,15 @@ class History:
         if pw is not None and pw > 0:
             if day["first_production_ts"] is None:
                 day["first_production_ts"] = epoch
+                day["start_observed"] = 1 if self._nonprod_date == d else 0
             day["last_production_ts"] = epoch
+            day["end_observed"] = 0          # production (again) -> end not yet seen
+            self._prev_prod = True
+        elif pw is not None:
+            self._nonprod_date = d
+            if self._prev_prod and day["last_production_ts"] is not None:
+                day["end_observed"] = 1
+            self._prev_prod = False
         # After midnight the inverter keeps reporting yesterday's daily values until it resets
         # them (at the latest at production start): only accept them once production was seen today.
         if day["first_production_ts"] is not None:
@@ -517,13 +545,16 @@ class History:
     @staticmethod
     def format_day(r: dict[str, Any]) -> dict[str, Any]:
         a, b = r.get("first_production_ts"), r.get("last_production_ts")
+        so, eo = aw.start_observed(r), aw.end_observed(r)
         r2 = lambda x, n: None if x is None else round(x, n)   # noqa: E731
         return {"date": r["date"], "yield_kwh": r2(r.get("yield_kwh"), 2),
                 "total_yield_kwh": r2(r.get("total_yield_kwh"), 2),
                 "peak_power_w": r2(r.get("peak_power_w"), 0),
                 "peak_ts": aw.iso(r.get("peak_ts")),
                 "first_production_ts": aw.iso(a), "last_production_ts": aw.iso(b),
-                "production_s": int(b - a) if a is not None and b is not None and b >= a else None,
+                "start_observed": so, "end_observed": eo,
+                "production_s": (int(b - a) if so and eo and a is not None and b is not None
+                                 and b >= a else None),
                 "source": r.get("source") or "bridge"}
 
     async def daily(self, from_: Any = None, to: Any = None) -> dict[str, Any]:
@@ -559,6 +590,7 @@ class History:
         if scope in ("daily", "all"):
             self._dirty, self._ms_buf = {}, []
             self._day, self._last_total, self._seen = None, None, False
+            self._nonprod_date, self._prev_prod = None, False
         deleted = await self._run_db(self._clear, scope)
         await self._refresh_stats()
         log.info("history cleared (scope=%s): %s", scope, deleted)
@@ -566,7 +598,7 @@ class History:
 
 
 _DAY_KEYS = ("date", "yield_kwh", "total_yield_kwh", "peak_power_w", "peak_ts",
-             "first_production_ts", "last_production_ts", "source")
+             "first_production_ts", "last_production_ts", "source", "start_observed", "end_observed")
 
 
 async def handle_request(history: History, payload: bytes, total_kwh: float | None) -> dict[str, Any]:

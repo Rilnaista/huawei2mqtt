@@ -19,6 +19,22 @@ def iso(epoch: float | None) -> str | None:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _flag(r: dict[str, Any], key: str, ts_key: str) -> bool:
+    v = r.get(key)
+    if v is not None:
+        return bool(v)
+    # unknown flag: only imported rows (history from the inverter/portal) count as observed
+    return r.get("source") == "import" and r.get(ts_key) is not None
+
+
+def start_observed(r: dict[str, Any]) -> bool:
+    return _flag(r, "start_observed", "first_production_ts")
+
+
+def end_observed(r: dict[str, Any]) -> bool:
+    return _flag(r, "end_observed", "last_production_ts")
+
+
 def _top(items: Iterable[tuple[Any, dict[str, Any]]], reverse: bool = True) -> list[dict[str, Any]]:
     """items = (sort_value, payload-without-rank). Ties keep input order (earlier date first)."""
     ordered = sorted(items, key=lambda it: it[0], reverse=reverse)   # sort is stable
@@ -63,7 +79,7 @@ def compute(rows: list[dict[str, Any]], milestone_rows: list[dict[str, Any]], *,
     longest = []
     for r in rows:
         a, b = r.get("first_production_ts"), r.get("last_production_ts")
-        if a is not None and b is not None and b > a:
+        if a is not None and b is not None and b > a and start_observed(r) and end_observed(r):
             longest.append((b - a, {"value": int(b - a), "unit": "s", "date": r["date"],
                                     "start": iso(a), "end": iso(b)}))
     longest_day = _top(longest)
@@ -71,7 +87,7 @@ def compute(rows: list[dict[str, Any]], milestone_rows: list[dict[str, Any]], *,
     earliest = []
     for r in rows:
         a = r.get("first_production_ts")
-        if a is None or not r["date"].startswith(y_s):
+        if a is None or not start_observed(r) or not r["date"].startswith(y_s):
             continue
         local = datetime.fromtimestamp(a, tz=timezone.utc).astimezone(tz)
         earliest.append((local.hour * 3600 + local.minute * 60 + local.second,
