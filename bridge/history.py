@@ -295,25 +295,27 @@ class History:
             if day is not None:
                 self.day_rolled = True
             day = self._day = self._new_day(d)
-            self._seen = False
-        y = _num(v.get("daily_yield_kwh"))
-        if y is not None:
-            day["yield_kwh"] = max(day["yield_kwh"] or 0.0, y)
-        p = _num(v.get("peak_power_today_w"))
-        if p is not None:
-            known = day["peak_power_w"]
-            if known is None:
-                day["peak_power_w"] = p
-                # started with a value but without a stored peak_ts: time of the peak unknown
-                day["peak_ts"] = epoch if (self._seen and p > 0) else None
-            elif p > known:
-                day["peak_power_w"] = p
-                day["peak_ts"] = epoch
         pw = _num(v.get("input_power_w"))
         if pw is not None and pw > 0:
             if day["first_production_ts"] is None:
                 day["first_production_ts"] = epoch
             day["last_production_ts"] = epoch
+        # After midnight the inverter keeps reporting yesterday's daily values until it resets
+        # them (at the latest at production start): only accept them once production was seen today.
+        if day["first_production_ts"] is not None:
+            y = _num(v.get("daily_yield_kwh"))
+            if y is not None:
+                day["yield_kwh"] = max(day["yield_kwh"] or 0.0, y)
+            p = _num(v.get("peak_power_today_w"))
+            if p is not None:
+                known = day["peak_power_w"]
+                if known is None:
+                    day["peak_power_w"] = p
+                    # bridge started in the middle of production without stored peak_ts: unknown
+                    day["peak_ts"] = epoch if (self._seen or not pw or pw <= 0 or p <= 0) else None
+                elif p > known:
+                    day["peak_power_w"] = p
+                    day["peak_ts"] = epoch
         total = _num(v.get("total_yield_kwh"))
         if total is not None:
             day["total_yield_kwh"] = total

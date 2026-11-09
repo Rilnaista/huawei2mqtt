@@ -299,3 +299,49 @@ async def test_status(cfg, hist, now):
     st = hist.status()
     assert st["days"] == 7 and st["samples"] == 1 and st["oldest"] == "2026-07-01T12:00:00Z"
     assert st["db_size_bytes"] > 0
+
+
+async def test_day_change_ignores_stale_yesterday_values(cfg, hist):
+    hist.record(T(2026, 6, 30, 17), vals(input_power_w=3000, daily_yield_kwh=50, peak_power_today_w=9000))
+    # 00:30 local on 1 Jul: inverter still reports yesterday's values, no production
+    hist.record(T(2026, 6, 30, 22, 30), vals(input_power_w=0, daily_yield_kwh=50, peak_power_today_w=9000))
+    assert hist.peak_ts_iso() is None
+    await hist.flush()
+    r = rows(cfg, "SELECT date, yield_kwh, peak_power_w, peak_ts FROM daily ORDER BY date")
+    assert r[0] == ("2026-06-30", 50.0, 9000.0, None)   # started mid-production
+    assert r[1] == ("2026-07-01", None, None, None)
+    # production starts, values reset: new day gets correct values
+    hist.record(T(2026, 7, 1, 4), vals(input_power_w=100, daily_yield_kwh=0, peak_power_today_w=100))
+    await hist.flush()
+    r = rows(cfg, "SELECT yield_kwh, peak_power_w FROM daily WHERE date='2026-07-01'")
+    assert r == [(0.0, 100.0)]
+    assert rows(cfg, "SELECT yield_kwh FROM daily WHERE date='2026-06-30'") == [(50.0,)]
+
+
+async def test_peak_ts_correct_after_observed_night(hist):
+    hist.record(T(2026, 6, 30, 17), vals(input_power_w=3000, peak_power_today_w=9000))
+    hist.record(T(2026, 6, 30, 22, 30), vals(input_power_w=0, peak_power_today_w=9000))
+    hist.record(T(2026, 7, 1, 4), vals(input_power_w=100, daily_yield_kwh=0.1, peak_power_today_w=100))
+    assert hist.peak_ts_iso() == "2026-07-01T04:00:00Z"
+
+
+async def test_start_mid_production_peak_ts_unknown_then_set(hist):
+    hist.record(T(2026, 7, 1, 10), vals(input_power_w=5000, peak_power_today_w=5000))
+    assert hist.peak_ts_iso() is None
+    hist.record(T(2026, 7, 1, 11), vals(input_power_w=7000, peak_power_today_w=7000))
+    assert hist.peak_ts_iso() == "2026-07-01T11:00:00Z"
+
+
+async def test_restart_keeps_stored_day_values(cfg, now):
+    h = History(cfg, "Europe/Berlin", now=now)
+    await h.start()
+    h.record(T(2026, 7, 1, 10), vals(input_power_w=100, daily_yield_kwh=5, peak_power_today_w=100))
+    h.record(T(2026, 7, 1, 11), vals(input_power_w=7000, daily_yield_kwh=20, peak_power_today_w=7000))
+    await h.close()
+    h2 = History(cfg, "Europe/Berlin", now=now)
+    await h2.start()
+    h2.record(T(2026, 7, 1, 12), vals(input_power_w=6000, daily_yield_kwh=25, peak_power_today_w=7000))
+    assert h2.peak_ts_iso() == "2026-07-01T11:00:00Z"
+    await h2.close()
+    r = rows(cfg, "SELECT yield_kwh, peak_power_w, peak_ts, first_production_ts FROM daily")
+    assert r == [(25.0, 7000.0, int(T(2026, 7, 1, 11).timestamp()), int(T(2026, 7, 1, 10).timestamp()))]
