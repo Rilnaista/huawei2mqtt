@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0-rc3] - 2026-11-09
+
+### Added
+- Permanent history: after `HISTORY_DAYS` the 10-second values are condensed to 5-minute averages (table `samples_5m`) and kept forever instead of being deleted.
+- History page: 30 and 90 days, 1 year, all and a free from–to range; hint when older 5-minute averages are shown; storage info in Settings.
+- `/api/history` and MQTT `history/get` read seamlessly across detail and 5-minute values (`resolution_s`); `/api/status` `history` gains `samples_5m` and `detail_oldest`.
+
+### Changed
+- `HISTORY_DAYS` now means "keep in full detail", default 90 (was 7), range 1–365.
+- Power axis in the history chart starts at 0.
+- `…/awards` is published after the first successful poll (no empty message on connect); a rate-limited `history/result` carries the request `type`.
+
 ## [0.2.0-rc2] - 2026-11-09
 
 ### Added

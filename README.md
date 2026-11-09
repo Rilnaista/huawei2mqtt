@@ -14,7 +14,7 @@ connection status of every component and the log — in seven languages.
 
 - 📈 **All the data**: PV strings, grid (3 phases), yield, status in plain words, temperature, insulation, alarms, device info
 - 🎛️ **Control**: limit active power in % or W, switch the inverter on — and off, if you explicitly allow it
-- 📊 **History & awards**: every 10-second value for 7 days (configurable) in a live chart; best day/week/month/year, peak power, milestones, CO₂ saved and yield in money — all stored locally in SQLite, also queryable via MQTT
+- 📊 **History & awards**: a permanent history – every 10-second value for 90 days (configurable), then kept forever as 5-minute averages; live chart from today back to years; best day/week/month/year, peak power, milestones, CO₂ saved and yield in money — all stored locally in SQLite, also queryable via MQTT
 - 🛡️ **Robust**: survives inverter, dongle or broker outages, reconnects by itself, never hammers the dongle
 - 🪶 **Lightweight**: one small Python process, ~4 runtime libraries, ~30 MB RAM, non-root
 - 🍓 **Runs on a Raspberry Pi**: images for amd64 and arm64 (Raspberry Pi 3/4/5 with 64-bit OS)
@@ -54,7 +54,7 @@ connection status of every component and the log — in seven languages.
 
 | History | Awards | Awards (mobile, dark) |
 |---|---|---|
-| ![History](docs/images/history-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards mobile](docs/images/awards-mobile-dark.png) |
+| ![History](docs/images/history-year-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards mobile](docs/images/awards-mobile-dark.png) |
 
 ## Requirements
 
@@ -122,7 +122,7 @@ with comments). Only `HUAWEI_HOST` and `MQTT_HOST` are mandatory.
 | `MQTT_FLAT_TOPICS` | `true` | Additionally publish one topic per value |
 | `PORTAL_PORT` | `8080` | Host port of the portal (compose mapping) |
 | `PORTAL_PASSWORD` | – | Password for changes in the portal. Empty = portal is read-only |
-| `HISTORY_DAYS` | `7` | How many days of 10-second history to keep (1–90). Daily values/awards are kept forever |
+| `HISTORY_DAYS` | `90` | How many days the 10-second values are kept in full detail (1–365). Older values are condensed to 5-minute averages and kept forever – nothing is deleted automatically. ~200–250 MB for 90 days, ~25 MB per further year |
 | `FEED_IN_TARIFF` | `0.08` | Feed-in tariff per kWh, used for the "yield in money" award |
 | `CURRENCY` | `EUR` | Currency code shown with money values |
 | `CO2_FACTOR` | `0.38` | kg CO₂ saved per kWh (default ≈ German grid mix) |
@@ -215,7 +215,7 @@ mosquitto_pub -h <broker> -u <user> -P <pass> -t 'huawei/HV2260000000/control/po
 - **Awards** – top 3 days, weeks, months, years, peak power, longest sunny day, earliest start; milestones, CO₂ saved and yield in money. Without a smart meter the money value is *total yield × feed-in tariff* — self-consumed energy is actually worth more.
 - **All values** – every register with address, raw value, scaled value and unit; filterable.
 - **Log** – live log with level filter.
-- **Settings** – language (no login needed) and login; after login: power limit, on/off, write test, intervals, log level, MQTT options, history/awards options and *clear storage* (history only, daily values + awards, or everything).
+- **Settings** – language (no login needed) and login; after login: power limit, on/off, write test, intervals, log level, MQTT options, history/awards options and *clear storage* (history (detail and 5-minute values), daily values + awards, or everything).
 
 Without `PORTAL_PASSWORD` the portal is read-only. Login attempts are rate-limited.
 **Forgot the password?** It is `PORTAL_PASSWORD` in your `.env` — change it and run `docker compose up -d`.

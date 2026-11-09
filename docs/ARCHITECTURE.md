@@ -27,7 +27,7 @@ an in-memory cache and a small persistent state:
 | `publish.py` | Topic and payload construction (group JSON with `ts`, flat topics, `null` handling) |
 | `mqtt.py` | MQTT client: LWT, reconnect with back-off, publish queue, set-topic receiver (ignores retained) |
 | `commands.py` | The three setters: validation, rate limit (1 / 2 s), whitelisted writes, `write_access` tracking |
-| `history.py` | SQLite store (`/data/huawei2mqtt.db`, WAL): 10-s samples, daily values, milestones; buffered writes (commit every 60 s), retention, bucketed queries (avg/min/max), MQTT `history/get` |
+| `history.py` | SQLite store (`/data/huawei2mqtt.db`, WAL): 10-s samples, condensed 5-min samples (`samples_5m`), daily values, milestones; buffered writes (commit every 60 s), condensing after `HISTORY_DAYS` (nothing is deleted), bucketed queries across both levels (avg/min/max), MQTT `history/get` |
 | `awards.py` | Pure functions: rankings (top 3), milestones, CO₂ and money from the daily values |
 | `api.py` | aiohttp: portal API + static files from `WEB_DIR` |
 | `config.py` | `.env` overlaid by `DATA_DIR/settings.json` (only the editable fields) |
@@ -86,7 +86,7 @@ endpoints return `403`.
 | `POST /api/history/clear` | session | `{"scope":"samples"\|"daily"\|"all"}` — clears history only, daily values + milestones, or both |
 
 `GET /api/status` additionally contains `poll` (`live_interval_s`, `last_live_at`, `next_live_at`),
-`inverter.dropouts_24h` / `last_dropout` and `history` (`days`, `samples`, `oldest`, `db_size_bytes`).
+`inverter.dropouts_24h` / `last_dropout` and `history` (`days`, `samples`, `samples_5m`, `oldest`, `detail_oldest`, `db_size_bytes`). `/api/history` additionally returns `resolution_s` (10, 300 or `"mixed"`).
 
 ## Persistent data (`/data`)
 
@@ -94,7 +94,7 @@ endpoints return `403`.
 |---|---|
 | `settings.json` | Settings changed in the portal (override `.env`) |
 | `state.json` | `write_access`, last known serial number |
-| `huawei2mqtt.db` | SQLite: `samples` (one row per live poll, kept `HISTORY_DAYS`), `daily` (kept forever), `milestones` |
+| `huawei2mqtt.db` | SQLite: `samples` (one row per live poll, kept `HISTORY_DAYS`), `samples_5m` (5-min averages of older samples, kept forever), `daily` (kept forever), `milestones` |
 | session secret | Signing key for portal sessions (generated on first start) |
 
 Deleting the volume also deletes history, daily values and awards. Deleting it resets the portal settings to `.env` and the write-access status to "unverified".

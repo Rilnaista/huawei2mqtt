@@ -15,7 +15,7 @@ sieben Sprachen.
 
 - 📈 **Alle Daten**: PV-Strings, Netz (3 Phasen), Ertrag, Zustand in Klartext, Temperatur, Isolation, Alarme, Gerätedaten
 - 🎛️ **Steuerung**: Wirkleistung in % oder W begrenzen, Wechselrichter einschalten – und ausschalten, wenn du es ausdrücklich erlaubst
-- 📊 **Verlauf & Awards**: jeder 10-Sekunden-Wert für 7 Tage (einstellbar) im Live-Diagramm; bester Tag/Woche/Monat/Jahr, Spitzenleistung, Meilensteine, eingespartes CO₂ und Ertrag in Euro – alles lokal in SQLite gespeichert und auch per MQTT abfragbar
+- 📊 **Verlauf & Awards**: dauerhafte Historie – jeder 10-Sekunden-Wert 90 Tage lang (einstellbar), danach für immer als 5-Minuten-Mittelwert; Diagramm von heute bis Jahre zurück; bester Tag/Woche/Monat/Jahr, Spitzenleistung, Meilensteine, eingespartes CO₂ und Ertrag in Euro – alles lokal in SQLite gespeichert und auch per MQTT abfragbar
 - 🛡️ **Robust**: übersteht Ausfälle von Wechselrichter, Dongle oder Broker, verbindet sich selbst neu und überlastet den Dongle nie
 - 🪶 **Schlank**: ein kleiner Python-Prozess, rund 4 Laufzeit-Bibliotheken, ca. 30 MB RAM, ohne Root-Rechte
 - 🍓 **Läuft auf dem Raspberry Pi**: Images für amd64 und arm64 (Raspberry Pi 3/4/5 mit 64-Bit-System)
@@ -55,7 +55,7 @@ sieben Sprachen.
 
 | Verlauf | Awards | Awards (Handy, dunkel) |
 |---|---|---|
-| ![Verlauf](docs/images/history-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards Handy](docs/images/awards-mobile-dark.png) |
+| ![Verlauf](docs/images/history-year-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards Handy](docs/images/awards-mobile-dark.png) |
 
 ## Voraussetzungen
 
@@ -123,7 +123,7 @@ Schlüssel mit Kommentar). Pflicht sind nur `HUAWEI_HOST` und `MQTT_HOST`.
 | `MQTT_FLAT_TOPICS` | `true` | Zusätzlich ein Topic je Einzelwert |
 | `PORTAL_PORT` | `8080` | Host-Port des Portals (Compose-Mapping) |
 | `PORTAL_PASSWORD` | – | Kennwort für Änderungen im Portal. Leer = Portal nur lesbar |
-| `HISTORY_DAYS` | `7` | Wie viele Tage der 10-Sekunden-Verlauf aufbewahrt wird (1–90). Tageswerte/Awards bleiben dauerhaft |
+| `HISTORY_DAYS` | `90` | Wie viele Tage die 10-Sekunden-Werte in voller Auflösung bleiben (1–365). Ältere Werte werden zu 5-Minuten-Mittelwerten zusammengefasst und dauerhaft behalten – automatisch gelöscht wird nichts. Ca. 200–250 MB für 90 Tage, ca. 25 MB je weiteres Jahr |
 | `FEED_IN_TARIFF` | `0.08` | Einspeisevergütung pro kWh für den Award „Ertrag in Geld“ |
 | `CURRENCY` | `EUR` | Währungskürzel für Geldbeträge |
 | `CO2_FACTOR` | `0.38` | Eingespartes CO₂ in kg pro kWh (Standard ≈ deutscher Strommix) |
@@ -214,11 +214,11 @@ mosquitto_pub -h <broker> -u <benutzer> -P <kennwort> -t 'huawei/HV2260000000/co
 ## Web-Portal
 
 - **Übersicht** – aktuelle Leistung, Ertrag, heutige Spitze mit Uhrzeit, Zustand in Klartext, Strings, Netz, Firmware, Verbindungsstatus von Wechselrichter, Dongle und Broker, Schreibzugriff und ein Countdown bis zur nächsten Aktualisierung. Kurze Aussetzer und Ausfälle werden deutlich angezeigt.
-- **Verlauf** – Live-Liniendiagramm beliebiger Werte (heute, 24 h, bis zur eingestellten Zahl von Tagen), Mittelwert-Linie mit Min/Max-Band.
+- **Verlauf** – Liniendiagramm beliebiger Werte: heute, 24 h, Tage, 1 Jahr, alles oder frei von–bis; Mittelwert-Linie mit Min/Max-Band, kurze Zeiträume laufen live mit.
 - **Awards** – Top 3 der Tage, Wochen, Monate, Jahre, Spitzenleistung, längster Sonnentag, frühester Start; Meilensteine, eingespartes CO₂ und Ertrag in Geld. Ohne Smart Meter gilt *Gesamtertrag × Einspeisevergütung* – selbst verbrauchter Strom ist eigentlich mehr wert.
 - **Alle Werte** – jedes Register mit Adresse, Rohwert, umgerechnetem Wert und Einheit; filterbar.
 - **Protokoll** – Live-Protokoll mit Filter nach Stufe.
-- **Einstellungen** – Sprache (ohne Login) und Anmeldung; nach dem Login: Leistungsbegrenzung, Ein/Aus, Schreibtest, Intervalle, Log-Stufe, MQTT-Optionen, Verlauf/Awards-Optionen und *Speicher leeren* (nur Verlauf, Tageswerte + Awards oder alles).
+- **Einstellungen** – Sprache (ohne Login) und Anmeldung; nach dem Login: Leistungsbegrenzung, Ein/Aus, Schreibtest, Intervalle, Log-Stufe, MQTT-Optionen, Verlauf/Awards-Optionen und *Speicher leeren* (Verlauf inkl. 5-Minuten-Werten, Tageswerte + Awards oder alles).
 
 Ohne `PORTAL_PASSWORD` ist das Portal nur lesbar. Anmeldeversuche sind gebremst.
 **Passwort vergessen?** Es steht als `PORTAL_PASSWORD` in der `.env` – dort ändern und `docker compose up -d` ausführen.
