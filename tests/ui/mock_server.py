@@ -2,13 +2,14 @@
 
 Start:  python3 tests/ui/mock_server.py [--port 8099] [--password demo] [--state online|stale|offline]
         [--no-password] [--shutdown-allowed] [--real-time] [--night] [--dropouts N]
-        [--sun-now HH:MM] [--peak-ts-null] [--empty] [--legacy]
+        [--sun-now HH:MM] [--peak-ts-null] [--empty] [--legacy] [--long]
 Dann http://127.0.0.1:8099/ oeffnen. Liefert die Portal-API aus topic-spec.md (rc1 + Erweiterung rc2)
 mit realistischen Tagwerten eines 10-kW-Geraets. Zusaetzlich:
   --dropouts N     inverter.dropouts_24h (1-2 = Hinweis, ab 3 gelb)
   --sun-now HH:MM  Tageskurve im Verlauf so verschieben, dass "jetzt" dieser Uhrzeit entspricht (Screenshots)
   --peak-ts-null   energy.peak_power_today_ts = null
   --empty          frische Installation: Verlauf/Tageswerte/Awards leer
+  --long           rc3: 2 Jahre 5-Minuten-Daten (samples_5m, saisonal), Feindaten nur history_days; resolution_s
   --legacy         altes Backend: /api/history, /api/daily, /api/awards, /api/history/clear liefern 404
 """
 import argparse
@@ -30,17 +31,18 @@ MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=ut
         ".svg": "image/svg+xml"}
 
 CFG = {"password": "demo", "state": "online", "shutdown": False, "real_time": False, "dropouts": 0,
-       "sun_shift": 0.0, "peak_ts_null": False, "empty": False, "legacy": False}
+       "sun_shift": 0.0, "peak_ts_null": False, "empty": False, "legacy": False, "long": False}
+LONG_DAYS = 730
 SESSIONS = set()
 FAILS = []  # Zeitstempel fehlgeschlagener Logins
 LOGS = []
 SETTINGS = {"poll_interval_live": 10, "poll_interval_static": 300, "log_level": "INFO",
             "mqtt_retain": True, "mqtt_flat_topics": True,
-            "history_days": 7, "feed_in_tariff": 0.081, "currency": "EUR", "co2_factor": 0.38,
+            "history_days": 90, "feed_in_tariff": 0.081, "currency": "EUR", "co2_factor": 0.38,
             "milestone_step_kwh": 1000}
 LIMITS = {"poll_interval_live": {"min": 5, "max": 300}, "poll_interval_static": {"min": 60, "max": 3600},
           "log_level": {"choices": ["DEBUG", "INFO", "WARNING", "ERROR"]},
-          "history_days": {"min": 1, "max": 90}, "feed_in_tariff": {"min": 0, "max": 5},
+          "history_days": {"min": 1, "max": 365}, "feed_in_tariff": {"min": 0, "max": 5},
           "co2_factor": {"min": 0, "max": 2}, "milestone_step_kwh": {"min": 100, "max": 100000}}
 CONTROL = {"power_limit_pct": 100.0, "power_limit_w": 10000}
 WRITE = {"state": "unverified", "last_cmd": 0.0}
@@ -152,10 +154,14 @@ def poll_info():
 
 def history_info():
     if CFG["empty"] or HIST["cleared"]:
-        return {"days": SETTINGS["history_days"], "samples": 0, "oldest": None, "db_size_bytes": 24576}
+        return {"days": SETTINGS["history_days"], "samples": 0, "samples_5m": 0, "oldest": None,
+                "detail_oldest": None, "db_size_bytes": 24576}
     days = SETTINGS["history_days"]
-    return {"days": days, "samples": int(days * 8640 * 0.96), "oldest": iso(time.time() - days * 86400),
-            "db_size_bytes": int(days * 8640 * 0.96 * 118)}
+    n5 = int(max(0, LONG_DAYS - days) * 288 * 0.42) if CFG["long"] else 0
+    return {"days": days, "samples": int(days * 8640 * 0.96), "samples_5m": n5,
+            "oldest": iso(time.time() - (LONG_DAYS if CFG["long"] else days) * 86400),
+            "detail_oldest": iso(time.time() - days * 86400),
+            "db_size_bytes": int(days * 8640 * 0.96 * 118 + n5 * 118)}
 
 
 def status():
@@ -205,7 +211,10 @@ def pv_power(ts):
     base = math.sin((hr - 5.8) / 14 * math.pi) ** 1.25
     slow = 0.85 + 0.15 * math.sin(ts / 1500 + lt.toordinal())
     fast = 1.0 - 0.45 * max(0.0, _noise(int(ts // 10)) - 0.72) / 0.28 * (0.5 + 0.5 * math.sin(ts / 330))
-    return max(0.0, 10150 * base * _day_factor(lt.date()) * slow * fast)
+    seas = 1.0
+    if CFG["long"]:  # saisonal: Sommer ~1.0, Winter ~0.25
+        seas = 0.25 + 0.75 * (0.5 - 0.5 * math.cos(2 * math.pi * (lt.timetuple().tm_yday - 15) / 365))
+    return max(0.0, 10150 * base * _day_factor(lt.date()) * slow * fast * seas)
 
 
 def yield_so_far(ts):
@@ -265,15 +274,22 @@ def history_payload(q):
     if t1 <= t0:
         return None
     step = (t1 - t0) / pts
-    lo_limit = max(now - SETTINGS["history_days"] * 86400, HIST["since"])
+    detail0 = now - SETTINGS["history_days"] * 86400
+    lo_limit = max(now - (LONG_DAYS if CFG["long"] else SETTINGS["history_days"]) * 86400, HIST["since"])
     empty = CFG["empty"] or HIST["cleared"]
     t, series = [], {f: {"avg": [], "min": [], "max": []} for f in fields if f in UNIT}
     for i in range(pts):
         b0 = t0 + i * step
         t.append(int(b0 * 1000))
         inside = not empty and b0 + step > lo_limit and b0 <= now and not (CFG["state"] != "online" and b0 > now - 900)
-        n = max(1, min(40, int(step // 10)))
+        n = max(1, min(96, int(step // 10)))
         pts_ts = [min(b0 + (k + 0.5) * step / n, now) for k in range(n)] if inside else []
+        if inside and b0 < detail0:  # verdichteter Bereich: nur 300-s-Raster, sonst Bucket leer
+            g0 = math.ceil(b0 / 300) * 300
+            grid = [g0 + 300 * k for k in range(int((min(b0 + step, detail0) - g0) // 300) + 1) if g0 + 300 * k < min(b0 + step, detail0)]
+            if len(grid) > 96:
+                grid = grid[:: math.ceil(len(grid) / 96)]
+            pts_ts = [x + 150 for x in grid] + [x for x in pts_ts if x >= detail0]
         pts_ts = [x for x in pts_ts if x >= lo_limit]
         for f in series:
             if not pts_ts:
@@ -285,6 +301,8 @@ def history_payload(q):
             series[f]["min"].append(min(vals))
             series[f]["max"].append(max(vals))
     return {"from": iso(t0), "to": iso(t1), "step_s": round(step, 2), "fields": list(series), "t": t, "series": series,
+            "resolution_s": 300 if (CFG["long"] and t1 <= detail0 and not empty) else (
+                "mixed" if CFG["long"] and t0 < detail0 and not empty else 10),
             "available": [{"name": f, "unit": u, "group": g} for f, u, g in FIELDS]}
 
 
@@ -512,6 +530,7 @@ class H(BaseHTTPRequestHandler):
             d = {"samples": 0, "daily": 0, "milestones": 0}
             if scope in ("samples", "all"):
                 d["samples"] = int(SETTINGS["history_days"] * 8640 * 0.96) if had else 0
+                d["samples_5m"] = history_info()["samples_5m"] if had else 0
                 HIST["cleared"] = True
                 HIST["since"] = time.time()
             if scope in ("daily", "all"):
@@ -599,13 +618,14 @@ def main():
     ap.add_argument("--sun-now", default="", help="HH:MM: Tageskurve des Verlaufs so verschieben, dass jetzt = diese Uhrzeit")
     ap.add_argument("--peak-ts-null", action="store_true")
     ap.add_argument("--empty", action="store_true", help="frische Installation ohne Verlauf/Tageswerte")
+    ap.add_argument("--long", action="store_true", help="rc3: 2 Jahre 5-Minuten-Daten")
     ap.add_argument("--legacy", action="store_true", help="aelteres Backend: neue Endpunkte -> 404")
     a = ap.parse_args()
     if a.sun_now:
         hh, mm = (int(x) for x in a.sun_now.split(":"))
         n = datetime.now()
         CFG["sun_shift"] = (hh * 3600 + mm * 60) - (n.hour * 3600 + n.minute * 60 + n.second)
-    CFG.update(dropouts=a.dropouts, peak_ts_null=a.peak_ts_null, empty=a.empty, legacy=a.legacy)
+    CFG.update(dropouts=a.dropouts, peak_ts_null=a.peak_ts_null, empty=a.empty, legacy=a.legacy, long=a.long)
     CFG.update(password="" if a.no_password else a.password, state=a.state, shutdown=a.shutdown_allowed, real_time=a.real_time, night=a.night)
     start = time.time() - 120
     for i, (lv, lg, m) in enumerate([

@@ -366,9 +366,10 @@ function renderSettings() {
         ? h('small', { class: 'muted' }, t('set.range', { min: num(lim.min, 0), max: num(lim.max, 0) })) : null;
       return h('div', { class: 'field' + (typeof val === 'boolean' ? ' check' : '') },
         h('label', { for: id }, tryT('field.' + name, name)), input, range,
+        tryT('field.' + name + '_help', null) ? h('small', { class: 'muted field-help' }, t('field.' + name + '_help')) : null,
         h('small', { class: 'field-error', id: 'err-' + name, role: 'alert', hidden: true }));
     });
-    form.replaceChildren(...rows, can ? h('div', { class: 'btn-row' }, h('button', { type: 'submit', class: 'btn primary' }, t('set.save'))) : null);
+    form.replaceChildren(...rows, ...(can ? [ h('div', { class: 'btn-row' }, h('button', { type: 'submit', class: 'btn primary' }, t('set.save')))] : []));
     renderSystem();
   }
 }
@@ -422,8 +423,9 @@ function fmtBytes(n) {
 }
 function renderMemory() {
   const hs = S.status?.history;
-  $('mem-info').textContent = hs ? t('mem.info', { samples: num(hs.samples ?? 0), size: fmtBytes(hs.db_size_bytes),
-    oldest: hs.oldest ? fmt.dateShort(new Date(hs.oldest)) : '–', days: num(hs.days ?? 0) }) : '';
+  const dt = (v) => (v ? fmt.dateShort(new Date(v)) : '–');
+  $('mem-info').textContent = hs ? t('mem.info', { samples: num(hs.samples ?? 0), samples5m: num(hs.samples_5m ?? 0),
+    size: fmtBytes(hs.db_size_bytes), oldest: dt(hs.oldest), detail: dt(hs.detail_oldest ?? hs.oldest) }) : '';
   $('mem-info').hidden = !hs;
   const can = loggedIn();
   $('mem-login').hidden = can || !passwordSet();
@@ -439,7 +441,7 @@ async function clearMemory(scope, btn) {
   if (r.status === 404) return toast(t('hist.unsupported'), 'warn');
   if (!r.ok) return toast(t(r.status === 403 ? 'err.forbidden' : r.status === 0 ? 'err.network' : 'mem.failed'), 'bad');
   const d = r.data?.deleted || {};
-  toast(t('mem.done', { samples: num(d.samples ?? 0), daily: num(d.daily ?? 0), milestones: num(d.milestones ?? 0) }));
+  toast(t('mem.done', { samples: num((d.samples ?? 0) + (d.samples_5m ?? 0)), daily: num(d.daily ?? 0), milestones: num(d.milestones ?? 0) }));
   poll();
 }
 

@@ -144,6 +144,10 @@
           <div class="fields-body" id="hist-fbody"></div>
         </details>
       </div>
+      <div class="hist-range" id="hist-range" hidden>
+        <label><span data-i18n="hist.from"></span><input type="date" id="hist-from"></label>
+        <label><span data-i18n="hist.to"></span><input type="date" id="hist-to"></label>
+      </div>
       <ul class="legend" id="hist-legend"></ul>
       <div class="hist-box" id="hist-box">
         <svg id="hist-svg" class="hist-svg" role="img" data-i18n-aria-label="hist.chart"></svg>
@@ -151,6 +155,7 @@
         <p class="hist-note" id="hist-note" hidden></p>
       </div>
       <p class="muted small-text" data-i18n="hist.band"></p>
+      <p class="muted small-text" id="hist-res" hidden></p>
     </div>
   </section>
 

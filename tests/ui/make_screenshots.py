@@ -49,10 +49,20 @@ def shot(page, route, name, wait=1200, countdown=False):
     print("ok", name)
 
 
+def shot_range(page, preset, name, wait=1500):
+    """Verlauf mit anderem Zeitraum (Knopf per Index in #hist-presets: y1 = '1 Jahr')."""
+    page.goto(URL + "#history")
+    page.wait_for_timeout(800)
+    page.click(f"#hist-presets button:has-text('{preset}')")
+    page.wait_for_timeout(wait)
+    page.screenshot(path=str(OUT / name))
+    print("ok", name)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     srv = subprocess.Popen([sys.executable, str(ROOT / "tests/ui/mock_server.py"), "--port", str(PORT),
-                            "--shutdown-allowed", "--sun-now", "13:20"], stdout=subprocess.DEVNULL)
+                            "--shutdown-allowed", "--sun-now", "13:20", "--long"], stdout=subprocess.DEVNULL)
     tmp = Path(tempfile.mkdtemp())
     try:
         wait_up()
@@ -75,6 +85,8 @@ def main():
                     shot(pg, "values", "values.png")
                     shot(pg, "log", "log.png")
                 shot(pg, "history", f"history-{scheme}.png", 2000)
+                if scheme == "light":
+                    shot_range(pg, "1 Jahr", "history-year-light.png")
                 shot(pg, "awards", f"awards-{scheme}.png", 1500)
                 ctx.close()
             ctx = b.new_context(storage_state=str(state), **desk)

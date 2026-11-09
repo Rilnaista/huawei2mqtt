@@ -6,41 +6,71 @@ const MAX_FIELDS = 6;
 const MAX_UNITS = 2;
 const DEFAULT_FIELDS = ['input_power_w', 'active_power_w'];
 const DAY = 86400000;
-const PRESET_DAYS = [3, 7, 14, 30, 60, 90];
+const PRESET_DAYS = [3, 7, 14, 30, 90];
+const LIVE_MAX_DAYS = 7;      // Live-Nachladen nur bis zu dieser Spanne
+const GAP_MS = 600e3;         // Linien verbinden Luecken bis 600 s (5-Minuten-Daten)
 
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const H = {
   preset: load('h2m-hist-preset', 'today'), fields: load('h2m-hist-fields', DEFAULT_FIELDS),
-  data: null, available: [], err: null, seq: 0, active: false, lastLive: null, width: 0, fb: null,
+  data: null, available: [], err: null, seq: 0, active: false, lastLive: null, width: 0, range: load('h2m-hist-range', null), fb: null,
   getStatus: () => null, timer: null, builtSig: '', hover: null, r: null, pts: [], valid: [], geo: null,
 };
 
 // ---------- Zeitraum ----------
 function presets() {
-  const days = H.getStatus()?.history?.days || 7;
-  const list = ['today', '24h', ...PRESET_DAYS.filter((d) => d <= days).map((d) => 'd' + d)];
-  if (days > 3 && !PRESET_DAYS.includes(days)) list.push('d' + days);
+  const hs = H.getStatus()?.history;
+  const days = hs?.days || 7;
+  const long = hs && 'samples_5m' in hs;   // rc3-Backend: Verlauf ueber Jahre
+  const list = ['today', '24h', ...PRESET_DAYS.filter((d) => long || d <= days).map((d) => 'd' + d)];
+  if (!long && days > 3 && !PRESET_DAYS.includes(days)) list.push('d' + days);
+  if (long) list.push('y1', 'all', 'range');
   return list;
 }
 function presetLabel(p) {
-  if (p === 'today' || p === '24h') return t('hist.preset.' + p);
+  if (p === 'today' || p === '24h' || p === 'y1' || p === 'all' || p === 'range') return t('hist.preset.' + p);
   return t('hist.preset.days', { n: p.slice(1) });
 }
 function midnight(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
+const ymd = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const parseYmd = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : null; };
+function customRange() {
+  const now = Date.now();
+  let from = parseYmd(H.range?.from); let to = parseYmd(H.range?.to);
+  if (from == null) from = midnight(now - 30 * DAY);
+  if (to == null) to = midnight(now);
+  if (to < from) [from, to] = [to, from];
+  const e = new Date(to); e.setDate(e.getDate() + 1);   // bis-Tag inklusive
+  return { from, to: Math.min(e.getTime(), now), x0: from, x1: Math.max(e.getTime(), from + DAY) };
+}
 function range() {
   const now = Date.now();
   if (H.preset === 'today') {
     const m = midnight(now); const e = new Date(m); e.setDate(e.getDate() + 1);
     return { from: m, to: now, x0: m, x1: e.getTime() };
   }
-  const n = H.preset === '24h' ? 1 : Number(H.preset.slice(1)) || 1;
+  if (H.preset === 'range') return customRange();
+  if (H.preset === 'all') {
+    const o = Date.parse(H.getStatus()?.history?.oldest || '');
+    const from = Number.isFinite(o) ? midnight(o) : now - 365 * DAY;
+    return { from, to: now, x0: from, x1: now };
+  }
+  const n = H.preset === '24h' ? 1 : H.preset === 'y1' ? 365 : Number(H.preset.slice(1)) || 1;
   return { from: now - n * DAY, to: now, x0: now - n * DAY, x1: now };
 }
+// Live-Nachladen nur bei kurzen Zeitraeumen, die bis "jetzt" reichen
+const isLiveRange = () => H.preset !== 'range' && (range().x1 - range().x0 <= LIVE_MAX_DAYS * DAY + 1);
 
 // ---------- Laden ----------
 async function fetchHistory() {
   const r = range();
-  const plot = Math.max(240, Math.min(1000, Math.round((H.width || 700) - 80)));
+  let plot = Math.max(240, Math.min(1000, Math.round((H.width || 700) - 80)));
+  // Lange Zeitraeume: Bucketbreite als Teiler/Vielfaches von 24 h, sonst Alias-Muster zur Tageskurve
+  const spanMs = r.to - r.from;
+  if (spanMs > 2 * DAY) {
+    const step = [1, 2, 3, 4, 6, 12, 24, 48, 96].map((x) => x * 3600e3).find((x) => spanMs / x <= plot) || 96 * 3600e3;
+    plot = Math.max(2, Math.min(2000, Math.round(spanMs / step)));
+  }
   const q = (withFields) => `/api/history?from=${encodeURIComponent(new Date(r.from).toISOString())}&to=${encodeURIComponent(new Date(r.to).toISOString())}`
     + (withFields ? '&fields=' + encodeURIComponent(H.fields.join(',')) : '') + `&points=${plot}`;
   let res = await api('GET', q(true));
@@ -79,9 +109,18 @@ function nice(lo, hi, n = 4) {
   return { min: Math.floor(lo / step + 1e-9) * step, max: Math.ceil(top / step - 1e-9) * step, step };
 }
 const TSTEPS = [60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, 3600e3, 7200e3, 10800e3, 21600e3, 43200e3, DAY, 2 * DAY, 7 * DAY];
+const MSTEPS = [1, 2, 3, 6, 12, 24];   // Monate
 function timeTicks(x0, x1, pw, minGap) {
   const want = Math.max(2, Math.floor(pw / minGap));
-  const step = TSTEPS.find((s) => (x1 - x0) / s <= want) || TSTEPS[TSTEPS.length - 1];
+  let step = TSTEPS.find((s) => (x1 - x0) / s <= want);
+  if (!step) {  // sehr lange Spannen: Monatsraster
+    const mths = (x1 - x0) / (30.44 * DAY);
+    const ms = MSTEPS.find((m) => mths / m <= want) || 24;
+    const out = []; const d = new Date(x0); d.setDate(1); d.setHours(0, 0, 0, 0);
+    if (ms > 1) d.setMonth(Math.floor(d.getMonth() / ms) * ms);
+    for (; d.getTime() <= x1; d.setMonth(d.getMonth() + ms)) if (d.getTime() >= x0) out.push(d.getTime());
+    return { ticks: out, step: ms * 30 * DAY, months: ms };
+  }
   const out = [];
   if (step < DAY) {
     const base = midnight(x0);
@@ -90,10 +129,15 @@ function timeTicks(x0, x1, pw, minGap) {
     const d = new Date(x0); d.setHours(0, 0, 0, 0); if (d.getTime() < x0) d.setDate(d.getDate() + 1);
     for (; d.getTime() <= x1; d.setDate(d.getDate() + step / DAY)) out.push(d.getTime());
   }
-  return { ticks: out, step };
+  return { ticks: out, step, months: 0 };
 }
 const dfHM = () => new Intl.DateTimeFormat(lang, { hour: '2-digit', minute: '2-digit' });
 const dfDay = () => new Intl.DateTimeFormat(lang, { weekday: 'short', day: 'numeric', month: 'numeric' });
+const dfDayShort = () => new Intl.DateTimeFormat(lang, { day: 'numeric', month: 'numeric' });
+const dfMonth = (mobile) => new Intl.DateTimeFormat(lang, { month: 'short', year: mobile ? '2-digit' : 'numeric' });
+const dfTipDate = () => new Intl.DateTimeFormat(lang, { day: 'numeric', month: 'short', year: 'numeric' });
+const dfTipMin = () => new Intl.DateTimeFormat(lang, { weekday: 'short', day: 'numeric', month: 'numeric', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+const tipFmt = (stepS) => (stepS >= 43200 ? dfTipDate() : stepS >= 60 ? dfTipMin() : dfTip());
 const dfTip = () => new Intl.DateTimeFormat(lang, { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 function fmtVal(v, unit) {
@@ -114,7 +158,7 @@ function build() {
   const series = d ? H.fields.filter((f) => d.series?.[f]) : [];
   const hasData = d && series.some((f) => (d.series[f].avg || []).some((v) => v != null));
   if (H.err || !d || !hasData) {
-    svg.replaceChildren();
+    svg.replaceChildren(); $('hist-res').hidden = true;
     $('hist-legend').replaceChildren();
     $('hist-tip').hidden = true;
     note.hidden = false;
@@ -124,6 +168,13 @@ function build() {
   }
   note.hidden = true;
   draw(d, series);
+  buildRes(d);
+}
+
+function buildRes(d) {
+  const el = $('hist-res'); const r = d?.resolution_s;
+  const key = r === 300 ? 'hist.res_5m' : r === 'mixed' ? 'hist.res_mixed' : null;
+  el.hidden = !key; el.textContent = key ? t(key) : '';
 }
 
 function draw(d, series) {
@@ -142,6 +193,7 @@ function draw(d, series) {
       for (const k of ['min', 'avg', 'max']) for (const v of d.series[f][k] || []) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
     }
     if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
+    if (u === 'W' && lo > 0) lo = 0;   // Leistungsachse beginnt bei 0
     if (lo >= 0 && lo < 0.5 * hi) lo = 0; else { const p = (hi - lo || 1) * 0.06; lo -= p; hi += p; }
     const sc = u === 'W' && hi >= 2000 ? 1000 : 1;
     return { unit: u, sc, label: sc === 1000 ? 'kW' : u, ...nice(lo, hi, mobile ? 4 : 5) };
@@ -168,21 +220,23 @@ function draw(d, series) {
     ul.textContent = ax.label; kids.push(ul);
   });
   // Zeitachse (Ortszeit)
-  const { ticks, step } = timeTicks(x0, x1, pw, mobile ? 62 : 80);
+  const span = x1 - x0;
+  const { ticks, step, months } = timeTicks(x0, x1, pw, mobile ? 62 : 80);
   const multi = x1 - x0 > 36 * 3600e3;
   for (const tt of ticks) {
     const x = X(tt);
     kids.push(sv('line', { class: 'gl v', x1: x, x2: x, y1: m.t, y2: m.t + ph }));
     const dd = new Date(tt); const isMid = dd.getHours() === 0 && dd.getMinutes() === 0;
     const lab = sv('text', { x, y: Ht - 8, 'text-anchor': x < m.l + 14 ? 'start' : x > W - m.r - 14 ? 'end' : 'middle', class: multi && isMid ? 'day' : '' });
-    lab.textContent = step >= DAY || (multi && isMid) ? dfDay().format(tt) : dfHM().format(tt);
+    lab.textContent = months ? dfMonth(mobile).format(tt)
+      : step >= DAY || (multi && isMid) ? (span > 21 * DAY ? dfDayShort() : dfDay()).format(tt) : dfHM().format(tt);
     kids.push(lab);
   }
   const now = Date.now();
   if (H.preset === 'today' && now < x1) kids.push(sv('line', { class: 'now', x1: X(now), x2: X(now), y1: m.t, y2: m.t + ph }));
 
   // Serien: Linie = avg, Flaeche = min..max; Luecken nicht ueberbruecken
-  const gapMs = Math.max(3 * (H.getStatus()?.poll?.live_interval_s || 10) * 1000, 2.5 * (d.step_s || 0) * 1000);
+  const gapMs = Math.max(GAP_MS, 3 * (H.getStatus()?.poll?.live_interval_s || 10) * 1000, 2.5 * (d.step_s || 0) * 1000);
   H.pts = [];
   for (const f of series) {
     const s = d.series[f]; const a = axisOf(f);
@@ -243,7 +297,7 @@ function showAt(tms, d) {
   hov.setAttribute('visibility', 'visible');
   const cross = hov.querySelector('.cross'); cross.setAttribute('x1', x); cross.setAttribute('x2', x);
   const circles = hov.querySelectorAll('circle');
-  const rows = [h('strong', {}, dfTip().format(tms))];
+  const rows = [h('strong', {}, tipFmt(d.step_s || 0).format(tms))];
   H.pts.forEach((p, i) => {
     const av = p.s.avg?.[idx]; const c = circles[i];
     if (av == null) c.setAttribute('visibility', 'hidden');
@@ -277,11 +331,12 @@ function buildLegend(d, series) {
 function buildControls() {
   const list = presets();
   if (!list.includes(H.preset)) H.preset = 'today';
-  const sig = [lang, list.join(), H.preset, H.fields.join(), H.available.map((a) => a.name).join()].join('|');
+  const sig = [lang, list.join(), H.preset, H.fields.join(), H.available.map((a) => a.name).join(), H.getStatus()?.history?.oldest].join('|');
   if (sig === H.builtSig) return;
   H.builtSig = sig;
   $('hist-presets').replaceChildren(...list.map((p) => h('button', { type: 'button', 'aria-pressed': p === H.preset ? 'true' : 'false', onclick: () => setPreset(p) }, presetLabel(p))));
   $('hist-fcount').textContent = `(${H.fields.length})`;
+  buildRange();
   const groups = new Map();
   for (const a of H.available) { if (!groups.has(a.group)) groups.set(a.group, []); groups.get(a.group).push(a); }
   const body = [];
@@ -292,6 +347,21 @@ function buildControls() {
   }
   body.push(h('p', { class: 'help muted' }, t('hist.fields_help', { max: MAX_FIELDS })));
   $('hist-fbody').replaceChildren(...body);
+}
+function buildRange() {
+  const box = $('hist-range'); box.hidden = H.preset !== 'range';
+  if (box.hidden) return;
+  const r = customRange(); const o = Date.parse(H.getStatus()?.history?.oldest || '');
+  const f = $('hist-from'); const to = $('hist-to');
+  f.value = ymd(r.x0); to.value = ymd(r.x1 - DAY);
+  f.max = to.max = ymd(Date.now());
+  if (Number.isFinite(o)) f.min = to.min = ymd(o);
+}
+function applyRange() {
+  const from = $('hist-from').value; const to = $('hist-to').value;
+  if (!parseYmd(from) || !parseYmd(to)) return;
+  H.range = { from, to }; localStorage.setItem('h2m-hist-range', JSON.stringify(H.range)); H.hover = null;
+  buildRange(); reload();
 }
 function setPreset(p) {
   H.preset = p; localStorage.setItem('h2m-hist-preset', p); H.hover = null;
@@ -309,7 +379,8 @@ function toggle(name, box) {
   }
   H.fields = f; localStorage.setItem('h2m-hist-fields', JSON.stringify(f));
   $('hist-fcount').textContent = `(${f.length})`;
-  H.builtSig = [lang, presets().join(), H.preset, H.fields.join(), H.available.map((a) => a.name).join()].join('|');
+  H.builtSig = '';
+  buildControls();
   reload();
 }
 
@@ -317,6 +388,8 @@ function toggle(name, box) {
 const hasLive = () => !!H.getStatus()?.poll?.last_live_at;
 export function init(getStatus) {
   H.getStatus = getStatus;
+  $('hist-from').addEventListener('change', applyRange);
+  $('hist-to').addEventListener('change', applyRange);
   new ResizeObserver(() => {
     if (!H.active || !H.data) return;
     const w = Math.round($('hist-box').clientWidth);
@@ -328,14 +401,14 @@ export function activate() {
   build();
   reload();
   clearInterval(H.timer);
-  H.timer = setInterval(() => { if (!document.hidden && !hasLive()) reload(); }, 10000); // Fallback ohne poll-Info
+  H.timer = setInterval(() => { if (!document.hidden && !hasLive() && isLiveRange()) reload(); }, 10000); // Fallback ohne poll-Info
 }
 export function deactivate() { H.active = false; clearInterval(H.timer); H.seq++; hideHover(); }
 // Pro Poll der Bridge nachladen
 export function onStatus(st) {
   if (!H.active) return;
   const ll = st?.poll?.last_live_at;
-  if (ll && ll !== H.lastLive) { const first = H.lastLive == null; H.lastLive = ll; if (!first) reload(); }
+  if (ll && ll !== H.lastLive) { const first = H.lastLive == null; H.lastLive = ll; if (!first && isLiveRange()) reload(); }
   buildControls();
 }
 export function relang() { H.builtSig = ''; if (H.active) build(); }
