@@ -14,6 +14,18 @@ class DeviceCommError(Exception):
     """Timeout / connection problem: the connection is considered broken."""
 
 
+def describe(exc: BaseException) -> str:
+    """Human readable (English) one-liner for a communication error; never a hex dump."""
+    msg = str(exc)
+    if msg in ("timeout", "no_response"):
+        return "inverter did not answer (timeout)"
+    if msg.startswith("connect_failed"):
+        return "cannot connect to the inverter"
+    if msg == "not_connected":
+        return "not connected to the inverter"
+    return f"communication error ({msg or type(exc).__name__})"
+
+
 class ModbusExceptionResponse(Exception):
     """The device answered with a Modbus exception (connection is fine)."""
 
@@ -83,23 +95,32 @@ class ModbusDevice:
         if wait > 0:
             await asyncio.sleep(wait)
 
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    async def _call(self, method: str, *args: Any, retry: bool = False, **kwargs: Any) -> Any:
+        """One request. ``retry``: exactly ONE immediate repeat after a timeout / no answer
+        (reads only; the SDongle is sensitive, so never more than one)."""
         async with self._lock:
             client = self._client
             if client is None:
                 raise DeviceCommError("not_connected")
-            await self._pace()
-            try:
-                rsp = await asyncio.wait_for(
-                    getattr(client, method)(*args, device_id=self.unit_id, **kwargs), self.timeout + 1)
-            except asyncio.TimeoutError as exc:
-                raise DeviceCommError("timeout") from exc
-            except Exception as exc:  # noqa: BLE001 (ModbusException, OSError, ...)
-                raise DeviceCommError(f"{type(exc).__name__}") from exc
-            finally:
-                self._last_end = time.monotonic()
-            if rsp is None:
-                raise DeviceCommError("no_response")
+            for attempt in (1, 2):
+                await self._pace()
+                try:
+                    rsp = await asyncio.wait_for(
+                        getattr(client, method)(*args, device_id=self.unit_id, **kwargs),
+                        self.timeout + 1)
+                    err = "no_response" if rsp is None else None
+                except asyncio.TimeoutError:
+                    rsp, err = None, "timeout"
+                except Exception as exc:  # noqa: BLE001 (ModbusException, OSError, ...)
+                    raise DeviceCommError(f"{type(exc).__name__}") from exc
+                finally:
+                    self._last_end = time.monotonic()
+                if err is None:
+                    break
+                if retry and attempt == 1:
+                    log.info("inverter did not answer (%s), retrying once", err)
+                    continue
+                raise DeviceCommError(err)
             if rsp.isError():
                 code = getattr(rsp, "exception_code", None)
                 if code:
@@ -110,7 +131,7 @@ class ModbusDevice:
     async def read(self, address: int, count: int) -> list[int]:
         if not 1 <= count <= 64:
             raise ValueError("count must be 1..64")
-        rsp = await self._call("read_holding_registers", address, count=count)
+        rsp = await self._call("read_holding_registers", address, count=count, retry=True)
         regs = list(rsp.registers)
         if len(regs) < count:
             raise DeviceCommError("short_response")

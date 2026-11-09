@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,8 +22,14 @@ LIMITS: dict[str, dict[str, Any]] = {
     "log_level": {"values": list(LOG_LEVELS)},
     "mqtt_retain": {"type": "bool"},
     "mqtt_flat_topics": {"type": "bool"},
+    "history_days": {"min": 1, "max": 90},
+    "feed_in_tariff": {"min": 0, "max": 5},
+    "currency": {"pattern": "^[A-Z]{3}$"},
+    "co2_factor": {"min": 0, "max": 2},
+    "milestone_step_kwh": {"min": 100, "max": 100000},
 }
 EDITABLE = tuple(LIMITS)
+CURRENCY_RE = re.compile(LIMITS["currency"]["pattern"])
 
 
 class ConfigError(Exception):
@@ -89,6 +97,26 @@ def validate_editable(data: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str
                 errors[key] = "out_of_range"
             else:
                 clean[key] = int(val)
+        elif key in ("history_days", "milestone_step_kwh"):
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or float(val) != int(val):
+                errors[key] = "invalid_type"
+            elif not lim["min"] <= int(val) <= lim["max"]:
+                errors[key] = "out_of_range"
+            else:
+                clean[key] = int(val)
+        elif key in ("feed_in_tariff", "co2_factor"):
+            if isinstance(val, bool) or not isinstance(val, (int, float)) \
+                    or not math.isfinite(float(val)):
+                errors[key] = "invalid_type"
+            elif not lim["min"] <= float(val) <= lim["max"]:
+                errors[key] = "out_of_range"
+            else:
+                clean[key] = float(val)
+        elif key == "currency":
+            if isinstance(val, str) and CURRENCY_RE.match(val):
+                clean[key] = val
+            else:
+                errors[key] = "invalid_value"
         elif key == "log_level":
             if isinstance(val, str) and val.upper() in LOG_LEVELS:
                 clean[key] = val.upper()
@@ -133,6 +161,11 @@ class Config:
     log_level: str = "INFO"
     mqtt_retain: bool = True
     mqtt_flat_topics: bool = True
+    history_days: int = 7
+    feed_in_tariff: float = 0.08
+    currency: str = "EUR"
+    co2_factor: float = 0.38
+    milestone_step_kwh: int = 1000
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -175,7 +208,14 @@ class Config:
             log_level=level,
             mqtt_retain=_bool(env, "MQTT_RETAIN", True),
             mqtt_flat_topics=_bool(env, "MQTT_FLAT_TOPICS", True),
+            history_days=_int(env, "HISTORY_DAYS", 7, 1, 90),
+            feed_in_tariff=_float(env, "FEED_IN_TARIFF", 0.08, 0, 5),
+            currency=_s(env, "CURRENCY", "EUR"),
+            co2_factor=_float(env, "CO2_FACTOR", 0.38, 0, 2),
+            milestone_step_kwh=_int(env, "MILESTONE_STEP_KWH", 1000, 100, 100000),
         )
+        if not CURRENCY_RE.match(cfg.currency):
+            raise ConfigError("CURRENCY: must be 3 upper-case letters")
         for key in ("poll_interval_live", "poll_interval_static"):
             lo = LIMITS[key]["min"]
             if getattr(cfg, key) < lo:

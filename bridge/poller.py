@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from . import registers as rg
 from .cache import Cache
 from .config import Config
-from .modbus import DeviceCommError, ModbusDevice, ModbusExceptionResponse
+from .modbus import DeviceCommError, ModbusDevice, ModbusExceptionResponse, describe
 from .state import Backoff, Runtime
 
 log = logging.getLogger("bridge.poller")
@@ -48,8 +49,10 @@ class Poller:
             except ModbusExceptionResponse as exc:
                 if blk.start not in self._exc_logged:
                     self._exc_logged.add(blk.start)
-                    log.warning("device rejected read %d..%d: %s", blk.start,
-                                blk.start + blk.count - 1, exc)
+                    # 0x04 / 0x06 (device busy): not a dropout, no reconnect, just a note
+                    lvl = logging.INFO if exc.code in (0x04, 0x06) else logging.WARNING
+                    log.log(lvl, "device rejected read %d..%d: %s", blk.start,
+                            blk.start + blk.count - 1, exc)
                 continue
             self._exc_logged.discard(blk.start)
             self.cache.update_block(blk, words)
@@ -61,6 +64,8 @@ class Poller:
         await self.read_blocks(rg.blocks_for(group=group))
 
     async def run_cycle(self, klass: str) -> bool:
+        if klass == rg.LIVE:
+            self.rt.last_live_at = datetime.now(timezone.utc)
         ok = await self.read_blocks(self._blocks[klass]) > 0
         if klass == rg.LIVE:
             if ok:
@@ -93,16 +98,23 @@ class Poller:
                 return await self._comm_failed(exc)
             self._last[klass] = clock()
             self.backoff.reset()
+        self.rt.schedule_next_live(max(0.05, due_in(rg.LIVE)))
         return max(0.05, min(due_in(k) for k in self._last))
 
     async def _comm_failed(self, exc: Exception, close: bool = True) -> float:
         if close:
             await self.device.close()
+            self.rt.record_dropout()
         else:
             self.rt.dongle_reachable = False
         delay = self.backoff.next()
         self.rt.live_failed(str(exc))
-        log.warning("device communication failed (%s); retry in %.0f s", exc, delay)
+        self.rt.last_live_at = datetime.now(timezone.utc)
+        self.rt.schedule_next_live(delay)
+        if close:
+            log.warning("%s, reconnecting in %.0f s", describe(exc), delay)
+        else:
+            log.warning("%s; next attempt in %.0f s", describe(exc), delay)
         if self.on_cycle:
             await self.on_cycle(rg.LIVE, False)
         return delay

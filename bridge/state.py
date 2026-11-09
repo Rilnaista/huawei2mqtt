@@ -8,7 +8,8 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -117,6 +118,11 @@ class Runtime:
         self.last_ok = False
         self.last_error: str | None = None
         self.dongle_reachable = False
+        # poll schedule (portal countdown) and communication dropouts (REQ-020 / REQ-027)
+        self.last_live_at: datetime | None = None
+        self.next_live_at: datetime | None = None
+        self._dropouts: deque[float] = deque()
+        self.last_dropout: datetime | None = None
         # mqtt
         self.mqtt_connected = False
         self.mqtt_error: str | None = None
@@ -156,6 +162,22 @@ class Runtime:
         self.last_ok = False
         self.last_error = error
 
+    # -- schedule / dropouts ---------------------------------------------------
+    def schedule_next_live(self, seconds: float) -> None:
+        self.next_live_at = datetime.now(timezone.utc) + timedelta(seconds=max(0.0, seconds))
+
+    def record_dropout(self) -> None:
+        """A communication error that forces a reconnect (after the single retry)."""
+        self._dropouts.append(self.clock())
+        self.last_dropout = datetime.now(timezone.utc)
+
+    @property
+    def dropouts_24h(self) -> int:
+        limit = self.clock() - 86400
+        while self._dropouts and self._dropouts[0] < limit:
+            self._dropouts.popleft()
+        return len(self._dropouts)
+
     @property
     def inverter(self) -> str:
         return inverter_state(self.last_success, self.last_ok, self.clock(),
@@ -185,4 +207,5 @@ class Runtime:
     def bridge_payload(self) -> dict[str, Any]:
         return {"inverter": self.inverter, "dongle": self.dongle,
                 "write_access": self.write_access, "last_success": self.last_success_iso,
-                "version": self.version, "ts": iso(datetime.now(timezone.utc))}
+                "version": self.version, "dropouts_24h": self.dropouts_24h,
+                "ts": iso(datetime.now(timezone.utc))}

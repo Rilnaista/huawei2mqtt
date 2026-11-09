@@ -80,7 +80,7 @@ def setup_logging(level: str, secrets: Callable[[], Iterable[str]],
         root.addHandler(h)
     root.setLevel(level)
     # third-party noise
-    logging.getLogger("pymodbus").setLevel(logging.WARNING)
+    logging.getLogger("pymodbus").setLevel(logging.CRITICAL)   # no hex dumps; bridge logs itself
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     return ring
 

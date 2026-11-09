@@ -19,6 +19,7 @@ from . import registers as rg
 from .cache import Cache, iso
 from .commands import COMMANDS, CommandExecutor
 from .config import LIMITS, Config, validate_editable
+from .history import History, HistoryUnavailable, RequestError
 from .logbuffer import RingBufferHandler, set_level
 from .state import Runtime
 
@@ -117,7 +118,9 @@ async def middleware(request: web.Request, handler: Any) -> web.StreamResponse:
 class Api:
     def __init__(self, cfg: Config, rt: Runtime, cache: Cache, executor: CommandExecutor,
                  ring: RingBufferHandler, sessions: Sessions,
-                 is_mqtt_connected: Callable[[], bool] | None = None) -> None:
+                 is_mqtt_connected: Callable[[], bool] | None = None,
+                 history: History | None = None) -> None:
+        self.history = history
         self.cfg, self.rt, self.cache, self.exe, self.ring = cfg, rt, cache, executor, ring
         self.sessions = sessions
         self.limiter = LoginLimiter()
@@ -151,7 +154,13 @@ class Api:
         return json_response({
             "bridge": {"version": rt.version, "uptime_s": rt.uptime_s, "started": iso(rt.started)},
             "inverter": {"state": rt.inverter, "last_success": rt.last_success_iso,
-                         "last_error": rt.last_error},
+                         "last_error": rt.last_error, "dropouts_24h": rt.dropouts_24h,
+                         "last_dropout": iso(rt.last_dropout) if rt.last_dropout else None},
+            "poll": {"live_interval_s": c.poll_interval_live,
+                     "last_live_at": iso(rt.last_live_at) if rt.last_live_at else None,
+                     "next_live_at": iso(rt.next_live_at) if rt.next_live_at else None},
+            "history": self.history.status() if self.history else
+            {"days": c.history_days, "samples": 0, "oldest": None, "db_size_bytes": 0},
             "dongle": {"state": rt.dongle, "host": c.huawei_host, "port": c.huawei_port,
                        "unit_id": c.huawei_unit_id},
             "mqtt": {"state": "connected" if rt.mqtt_connected else "disconnected",
@@ -212,6 +221,8 @@ class Api:
                 "mqtt_password_set": bool(c.mqtt_password), "mqtt_tls": c.mqtt_tls,
                 "portal_password_set": bool(c.portal_password),
                 "allow_shutdown": c.allow_shutdown, "base_topic": self.rt.base,
+                "software_version": self.cache.value("software_version"),
+                "firmware_version": self.cache.value("firmware_version"),
             },
             "limits": LIMITS,
         }
@@ -245,6 +256,37 @@ class Api:
     async def write_test(self, request: web.Request) -> web.Response:
         self.require_write(request)
         return json_response(await self.exe.write_test())
+
+    # -- history / awards (rc2) -------------------------------------------------------
+    def _hist(self) -> History:
+        if self.history is None:
+            raise web.HTTPServiceUnavailable(reason="history_unavailable")
+        return self.history
+
+    async def _hist_call(self, coro: Any) -> web.Response:
+        try:
+            return json_response(await coro)
+        except RequestError as exc:
+            return json_response({"error": exc.reason}, 400)
+        except HistoryUnavailable:
+            return json_response({"error": "history_unavailable"}, 503)
+
+    async def get_history(self, request: web.Request) -> web.Response:
+        q = request.query
+        return await self._hist_call(self._hist().samples(
+            q.get("from"), q.get("to"), q.get("fields"), q.get("points")))
+
+    async def get_daily(self, request: web.Request) -> web.Response:
+        q = request.query
+        return await self._hist_call(self._hist().daily(q.get("from"), q.get("to")))
+
+    async def get_awards(self, request: web.Request) -> web.Response:
+        return await self._hist_call(self._hist().awards(self.cache.value("total_yield_kwh")))
+
+    async def history_clear(self, request: web.Request) -> web.Response:
+        self.require_write(request)
+        data = await self.body(request)
+        return await self._hist_call(self._hist().clear(data.get("scope")))
 
     # -- static files ------------------------------------------------------------------
     def _file(self, rel: str) -> Path | None:
@@ -293,6 +335,10 @@ class Api:
             web.put("/api/settings", self.put_settings),
             web.post("/api/command", self.command),
             web.post("/api/write-test", self.write_test),
+            web.get("/api/history", self.get_history),
+            web.get("/api/daily", self.get_daily),
+            web.get("/api/awards", self.get_awards),
+            web.post("/api/history/clear", self.history_clear),
             web.get("/", self.index),
             web.get("/static/{tail:.*}", self.static),
             web.get("/{tail:(?!api/).+}", self.static),

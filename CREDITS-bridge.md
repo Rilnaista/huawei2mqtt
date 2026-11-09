@@ -26,7 +26,8 @@ Development / tests only (requirements-dev.txt, not shipped):
 | pytest | 9.2.0 | MIT |
 | pytest-asyncio | 1.4.1.post1 | Apache-2.0 |
 
-Runtime: Python 3.12 (PSF License).
+Runtime: Python 3.12 (PSF License). The history store uses the standard library `sqlite3`
+(SQLite, public domain) - no additional dependency since rc2.
 
 ## Protocol references (no code or dependency taken over)
 - Huawei "SUN2000 Modbus Interface Definitions": register addresses, gains, status codes

@@ -132,6 +132,7 @@ class CommandExecutor:
             reason, denied = self._classify(exc)
             if isinstance(exc, DeviceCommError):
                 await self.device.close()
+                self.rt.record_dropout()
             if denied:
                 self._set_access("denied")
             return await self._finish(self._result(command, norm, "error", reason))
@@ -155,6 +156,7 @@ class CommandExecutor:
             reason, denied = self._classify(exc)
             if isinstance(exc, DeviceCommError):
                 await self.device.close()
+                self.rt.record_dropout()
             if denied:
                 self._set_access("denied")
             return await self._finish_test(self._result(cmd, None, "error", reason))

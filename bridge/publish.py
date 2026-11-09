@@ -12,7 +12,8 @@ from .config import Config
 from .mqtt import MqttService
 from .state import Runtime
 
-BRIDGE_FIELDS = ["inverter", "dongle", "write_access", "last_success", "version"]
+BRIDGE_FIELDS = ["inverter", "dongle", "write_access", "last_success", "version",
+                 "dropouts_24h"]
 
 
 def flat_value(v: Any) -> str:

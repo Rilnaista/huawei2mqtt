@@ -131,6 +131,8 @@ DERIVED: dict[str, Callable[[dict[str, Any], dict[str, Any]], Any]] = {
     "alarms": lambda v, c: codes.decode_alarms(
         {n: v.get(f"alarm_{n}") for n in (1, 2, 3)}),
     "shutdown_allowed": lambda v, c: bool(c.get("allow_shutdown")),
+    # ISO time of today's peak (from the history module via context); null if unknown
+    "peak_power_today_ts": lambda v, c: c.get("peak_power_today_ts"),
 }
 
 # Payload order per group (== order in topic-spec).
@@ -141,7 +143,8 @@ GROUP_FIELDS: dict[str, list[str]] = {
              "voltage_l1_l2_v", "voltage_l2_l3_v", "voltage_l3_l1_v",
              "voltage_l1_v", "voltage_l2_v", "voltage_l3_v",
              "current_l1_a", "current_l2_a", "current_l3_a"],
-    "energy": ["daily_yield_kwh", "total_yield_kwh", "peak_power_today_w"],
+    "energy": ["daily_yield_kwh", "total_yield_kwh", "peak_power_today_w",
+               "peak_power_today_ts"],
     "inverter": ["status_code", "status", "running", "efficiency_pct", "internal_temperature_c",
                  "insulation_resistance_mohm", "fault_code", "state_1", "state_2", "state_3",
                  "alarm_1", "alarm_2", "alarm_3", "alarms", "startup_time", "shutdown_time"],
