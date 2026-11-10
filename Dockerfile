@@ -23,6 +23,7 @@ COPY bridge/ /app/bridge/
 COPY web/index.html /app/web/index.html
 COPY web/static/ /app/web/static/
 COPY web/i18n/ /app/web/i18n/
+COPY web/manifest.webmanifest web/sw.js /app/web/
 USER 1000:1000
 VOLUME /data
 EXPOSE 8080
