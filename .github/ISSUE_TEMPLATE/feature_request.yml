@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an idea for huawei2mqtt
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the idea and what you would use it for.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Inverter model, screenshots, links …
