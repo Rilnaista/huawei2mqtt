@@ -39,3 +39,5 @@ Runtime: Python 3.12 (PSF License). The history store uses the standard library 
 | Component | Version | License |
 |---|---|---|
 | python:3.12-alpine (Docker official image) | 3.12 | Python: PSF-2.0; Alpine Linux userland: MIT/GPL/others per package (not modified) |
+
+rc4 (0.4.0): no new dependencies (backup, CSV export and warnings use only the Python standard library: sqlite3, statistics, csv-free streaming via aiohttp).

@@ -27,6 +27,7 @@ LIMITS: dict[str, dict[str, Any]] = {
     "currency": {"pattern": "^[A-Z]{3}$"},
     "co2_factor": {"min": 0, "max": 2},
     "milestone_step_kwh": {"min": 100, "max": 100000},
+    "backup_keep": {"min": 0, "max": 90},
 }
 EDITABLE = tuple(LIMITS)
 CURRENCY_RE = re.compile(LIMITS["currency"]["pattern"])
@@ -97,7 +98,7 @@ def validate_editable(data: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str
                 errors[key] = "out_of_range"
             else:
                 clean[key] = int(val)
-        elif key in ("history_days", "milestone_step_kwh"):
+        elif key in ("history_days", "milestone_step_kwh", "backup_keep"):
             if isinstance(val, bool) or not isinstance(val, (int, float)) or float(val) != int(val):
                 errors[key] = "invalid_type"
             elif not lim["min"] <= int(val) <= lim["max"]:
@@ -166,6 +167,10 @@ class Config:
     currency: str = "EUR"
     co2_factor: float = 0.38
     milestone_step_kwh: int = 1000
+    backup_keep: int = 7
+    # .env only (no portal setting): early-warning thresholds
+    warn_insulation_ratio: float = 0.5
+    warn_string_deviation: float = 0.10
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -213,6 +218,9 @@ class Config:
             currency=_s(env, "CURRENCY", "EUR"),
             co2_factor=_float(env, "CO2_FACTOR", 0.38, 0, 2),
             milestone_step_kwh=_int(env, "MILESTONE_STEP_KWH", 1000, 100, 100000),
+            backup_keep=_int(env, "BACKUP_KEEP", 7, 0, 90),
+            warn_insulation_ratio=_float(env, "WARN_INSULATION_RATIO", 0.5, 0.1, 0.9),
+            warn_string_deviation=_float(env, "WARN_STRING_DEVIATION", 0.10, 0.02, 0.5),
         )
         if not CURRENCY_RE.match(cfg.currency):
             raise ConfigError("CURRENCY: must be 3 upper-case letters")

@@ -259,6 +259,7 @@ async def test_end_to_end_live_cycle_feeds_history_and_publishes(cfg):
     import sqlite3
     from .test_mqtt import wait_for
     cfg.portal_listen_port, cfg.portal_host, cfg.poll_interval_live = 18998, "127.0.0.1", 5
+    cfg.backup_keep = 0        # the startup backup would flush the RAM buffer this test inspects
     dev = FakeDevice()
     a = App(cfg, RingBufferHandler(), device=dev,
             mqtt_factory=lambda c, r, will: FakeMqttClient(will))

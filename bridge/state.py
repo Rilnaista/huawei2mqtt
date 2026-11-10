@@ -59,6 +59,8 @@ class Persistence:
         self.dir = data_dir
         self.write_access = "unverified"
         self.serial: str | None = None
+        self.summary_sent: str | None = None      # rc4: date (YYYY-MM-DD) of the last daily/summary
+        self.warnings: dict[str, Any] = {}        # rc4: early-warning state (see daily.py)
         self._load()
 
     @property
@@ -75,13 +77,19 @@ class Persistence:
                 self.write_access = raw["write_access"]
             if isinstance(raw.get("serial_number"), str) and raw["serial_number"]:
                 self.serial = raw["serial_number"]
+            if isinstance(raw.get("summary_sent"), str):
+                self.summary_sent = raw["summary_sent"]
+            if isinstance(raw.get("warnings"), dict):
+                self.warnings = raw["warnings"]
 
     def save(self) -> None:
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps({"write_access": self.write_access,
-                                       "serial_number": self.serial}), encoding="utf-8")
+                                       "serial_number": self.serial,
+                                       "summary_sent": self.summary_sent,
+                                       "warnings": self.warnings}), encoding="utf-8")
             os.replace(tmp, self.path)
         except OSError as exc:
             log.warning("cannot persist state: %s", exc)

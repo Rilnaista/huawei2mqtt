@@ -29,6 +29,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone, tzinfo
 from typing import Any, Callable
 
 from . import awards as aw
+from . import insights as ins
 from . import registers as rg
 from .config import Config
 
@@ -44,6 +45,7 @@ DEFAULT_DAILY_SPAN = 31
 BUFFER_CAP = 5000            # samples kept in RAM while the DB is failing
 MAX_MILESTONES_PER_SAMPLE = 50
 BUCKET_S = 300               # samples_5m resolution
+MAX_EXPORT_DAYS = 400
 COMPACT_CHUNK_S = 86400      # one transaction per day of backlog
 
 _NUMERIC_DERIVED = {"pv1_power_w": "W", "pv2_power_w": "W", "running": ""}
@@ -633,6 +635,156 @@ class History:
         return aw.compute(rows, ms, now=self._now(), tz=self._tz, step_kwh=cfg.milestone_step_kwh,
                           total_kwh=total_kwh, tariff=cfg.feed_in_tariff, currency=cfg.currency,
                           co2_factor=cfg.co2_factor)
+
+    # ------------------------------------------------------------------ rc4: context / summary
+    async def _all_days(self) -> list[dict[str, Any]]:
+        rows = await self._run_db(self._query_daily, "0000-01-01", "9999-12-31")
+        return self._overlay(rows, "0000-01-01", "9999-12-31")
+
+    def today_str(self) -> str:
+        return self._local_date(self._now())
+
+    def day_yield(self, day: str) -> float | None:
+        """Yield of ``day`` from the in-RAM state (live), None if not known there."""
+        for d in list(self._dirty.values()) + ([self._day] if self._day else []):
+            if d["date"] == day and d.get("yield_kwh") is not None:
+                return d["yield_kwh"]
+        return None
+
+    async def context(self, day: Any = None) -> dict[str, Any]:
+        d = self._parse_day(day, "invalid_date") if day is not None else self._now().astimezone(
+            self._tz).date()
+        return ins.context(await self._all_days(), d.isoformat())
+
+    async def summary(self, day: str) -> dict[str, Any]:
+        rows = await self._all_days()
+        ctx = ins.context(rows, day)
+        row = next((r for r in rows if r["date"] == day), None)
+        cfg = self.cfg
+        return ins.summary_payload(ctx, self.format_day(row) if row else None,
+                                   tariff=cfg.feed_in_tariff, currency=cfg.currency,
+                                   co2_factor=cfg.co2_factor,
+                                   now_epoch=self._now().timestamp())
+
+    # ------------------------------------------------------------------ rc4: warning metrics (SQL)
+    def _day_bounds(self, day: date) -> tuple[int, int]:
+        t0 = datetime.combine(day, dtime.min, tzinfo=self._tz)
+        t1 = datetime.combine(day + timedelta(days=1), dtime.min, tzinfo=self._tz)
+        return int(t0.timestamp()), int(t1.timestamp())
+
+    def _query_metrics(self, days: list[date]) -> tuple[dict[str, float], dict[str, float]]:
+        """Per local day: median insulation resistance during production (input > 100 W) and the
+        energy share of string 1. Aggregated in SQL (window functions), both history levels; the
+        5-minute level is only used before the oldest fine sample (no double counting)."""
+        vals, params = [], []
+        for d in days:
+            t0, t1 = self._day_bounds(d)
+            vals.append("(?,?,?)")
+            params += [d.isoformat(), t0, t1]
+        d_cte = "d(day,t0,t1) AS (VALUES " + ",".join(vals) + ")"
+        lim = "(SELECT COALESCE(MIN(ts), 9223372036854775807) FROM samples)"
+        sql_ins = (
+            f"WITH {d_cte}, v AS ("
+            "SELECT d.day AS day, s.insulation_resistance_mohm AS val FROM d JOIN samples s "
+            "ON s.ts >= d.t0 AND s.ts < d.t1 WHERE s.input_power_w > 100 "
+            "AND s.insulation_resistance_mohm IS NOT NULL "
+            "UNION ALL SELECT d.day, s.insulation_resistance_mohm FROM d JOIN samples_5m s "
+            f"ON s.ts >= d.t0 AND s.ts < d.t1 WHERE s.ts < {lim} AND s.input_power_w > 100 "
+            "AND s.insulation_resistance_mohm IS NOT NULL), "
+            "r AS (SELECT day, val, ROW_NUMBER() OVER (PARTITION BY day ORDER BY val) AS rn, "
+            "COUNT(*) OVER (PARTITION BY day) AS n FROM v) "
+            "SELECT day, AVG(val) FROM r WHERE rn IN ((n + 1) / 2, (n + 2) / 2) GROUP BY day")
+        sql_str = (
+            f"WITH {d_cte}, v AS ("
+            "SELECT d.day AS day, s.pv1_power_w * 10.0 AS p1, s.pv2_power_w * 10.0 AS p2 "
+            "FROM d JOIN samples s ON s.ts >= d.t0 AND s.ts < d.t1 "
+            "WHERE s.pv1_power_w IS NOT NULL AND s.pv2_power_w IS NOT NULL "
+            "UNION ALL SELECT d.day, s.pv1_power_w * 300.0, s.pv2_power_w * 300.0 "
+            "FROM d JOIN samples_5m s ON s.ts >= d.t0 AND s.ts < d.t1 "
+            f"WHERE s.ts < {lim} AND s.pv1_power_w IS NOT NULL AND s.pv2_power_w IS NOT NULL) "
+            "SELECT day, SUM(p1), SUM(p2) FROM v GROUP BY day")
+        with self._lock:
+            c = self._db()
+            med = {r[0]: float(r[1]) for r in c.execute(sql_ins, params) if r[1] is not None}
+            share = {r[0]: r[1] / (r[1] + r[2]) for r in c.execute(sql_str, params)
+                     if r[1] is not None and r[2] is not None and r[1] + r[2] > 0}
+        return med, share
+
+    async def warning_inputs(self, day: str) -> dict[str, Any]:
+        """Metrics for ``day`` and the 61 days before it (baseline + previous scored day)."""
+        d = date.fromisoformat(day)
+        days = [d - timedelta(days=i) for i in range(61, -1, -1)]
+        med, share = await self._run_db(self._query_metrics, days)
+        a, b = days[0].isoformat(), day
+        rows = self._overlay(await self._run_db(self._query_daily, a, b), a, b)
+        yields = {r["date"]: r["yield_kwh"] for r in rows if r.get("yield_kwh") is not None}
+        return {"insulation": med, "share": share, "yields": yields}
+
+    # ------------------------------------------------------------------ rc4: CSV export
+    def export_range(self, from_: Any, to: Any) -> tuple[int, int, str, str]:
+        """-> (from_epoch, to_epoch, from_date, to_date) in local dates for the file name.
+        A date-only ``to`` includes that whole day."""
+        now = self._now()
+        if to is None:
+            t = now
+        else:
+            t = self._parse_dt(to, "invalid_to")
+            if isinstance(to, str) and len(to.strip()) == 10:
+                t += timedelta(days=1)
+        if from_ is not None:
+            f = self._parse_dt(from_, "invalid_from")
+        else:
+            f = datetime.combine(t.astimezone(self._tz).date(), dtime.min, tzinfo=self._tz)
+        fi, ti = int(f.timestamp()), int(t.timestamp())
+        if ti <= fi:
+            raise RequestError("invalid_range")
+        if ti - fi > MAX_EXPORT_DAYS * 86400:
+            raise RequestError("range_too_large")
+        last = t.astimezone(self._tz).date() - (timedelta(days=1) if (
+            isinstance(to, str) and len(to.strip()) == 10) else timedelta(0))
+        return fi, ti, f.astimezone(self._tz).date().isoformat(), last.isoformat()
+
+    def export_fields(self, fields: Any) -> list[str]:
+        if fields is None or (isinstance(fields, str) and not fields.strip()):
+            return list(FIELD_NAMES)
+        names = [x.strip() for x in str(fields).split(",") if x.strip()]
+        if not names:
+            raise RequestError("invalid_fields")
+        names = list(dict.fromkeys(names))
+        if any(n not in FIELD_NAMES for n in names):
+            raise RequestError("unknown_field")
+        return names
+
+    def _export_slice(self, f: int, t: int, fields: list[str]) -> list[tuple[Any, ...]]:
+        sel = ", ".join(f'"{n}"' for n in fields)
+        with self._lock:
+            c = self._db()
+            d0 = c.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+            rows = []
+            if d0 is None or d0 > f:
+                rows += c.execute(f"SELECT ts, {sel} FROM samples_5m WHERE ts >= ? AND ts <= ? "
+                                  "AND ts < ? ORDER BY ts",
+                                  (f, t, d0 if d0 is not None else 2**62)).fetchall()
+            if d0 is not None and d0 <= t:
+                rows += c.execute(f"SELECT ts, {sel} FROM samples WHERE ts >= ? AND ts <= ? "
+                                  "ORDER BY ts", (f, t)).fetchall()
+        return rows
+
+    async def export_samples(self, f: int, t: int, fields: list[str]):
+        """Async generator of raw rows ``(ts, *values)`` of both levels, one day per DB call
+        (the lock is never held for a whole export)."""
+        await self.flush()
+        cur = f
+        while cur <= t:
+            end = min(cur + 86400 - 1, t)
+            for row in await self._run_db(self._export_slice, cur, end, fields):
+                yield row
+            cur = end + 1
+
+    def local_str(self, epoch: float | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+        if epoch is None:
+            return ""
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone(self._tz).strftime(fmt)
 
     async def clear(self, scope: str) -> dict[str, Any]:
         if scope not in ("samples", "daily", "all"):

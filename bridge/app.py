@@ -14,9 +14,12 @@ from aiohttp import web
 
 from . import registers as rg
 from .api import Api, Sessions
+from . import codes
+from .backup import Backup
 from .cache import Cache
 from .commands import SET_SUFFIX, CommandExecutor
 from .config import Config
+from .daily import DailyJobs
 from .history import History, handle_request
 from .logbuffer import RingBufferHandler
 from .modbus import ModbusDevice
@@ -51,6 +54,10 @@ class App:
         self.api = Api(cfg, self.rt, self.cache, self.executor, ring,
                        Sessions(self.persist.session_secret(), lambda: cfg.portal_password),
                        history=self.history)
+        self.backup = Backup(cfg, self.history, self.history._tz)
+        self.jobs = DailyJobs(cfg, self.persist, self.history, self._publish_json, self._probe,
+                              ready=lambda: self.rt.mqtt_connected and self.rt.base is not None)
+        self.api.jobs, self.api.backup = self.jobs, self.backup
         self.rt.on_serial_change = self.mqtt.request_reconnect
         self.executor.on_access_change = self.pub.publish_bridge
         self.stop_event = asyncio.Event()
@@ -111,8 +118,27 @@ class App:
         self._awards_sig = sig
         self.mqtt.publish(f"{base}/awards", json.dumps(data, ensure_ascii=False), True)
 
+    def _publish_json(self, suffix: str, payload: dict[str, Any], retain: bool) -> bool:
+        base = self.rt.base
+        if base is None or not self.rt.mqtt_connected:
+            return False
+        self.mqtt.publish(f"{base}/{suffix}", json.dumps(payload, ensure_ascii=False), retain)
+        return True
+
+    def _probe(self) -> tuple[str, float | None, bool]:
+        pw = self.cache.value("input_power_w")
+        key = codes.status_key(self.cache.value("status_code"))
+        return (self.rt.inverter, pw if isinstance(pw, (int, float)) else None,
+                bool(key and key.startswith("standby")))
+
+    async def _insights_loop(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            await self.jobs.tick()
+
     async def _on_mqtt_connected(self) -> None:
         self.pub.publish_snapshot()
+        self.jobs.publish_warnings()
         if self._live_ok_seen:
             await self._publish_awards(force=True)
 
@@ -180,12 +206,16 @@ class App:
         tasks = [asyncio.create_task(self.poller.run(), name="poller"),
                  asyncio.create_task(self.mqtt.run(), name="mqtt"),
                  asyncio.create_task(self._status_watch(), name="status"),
-                 asyncio.create_task(self.history.run(), name="history")]
+                 asyncio.create_task(self.history.run(), name="history"),
+                 asyncio.create_task(self._insights_loop(), name="insights"),
+                 asyncio.create_task(self.backup.run(), name="backup")]
         await self.stop_event.wait()
         log.info("shutting down")
         self.poller.stop()
         self.mqtt.stop()    # publishes "offline" and disconnects
         tasks[2].cancel()
+        tasks[4].cancel()
+        self.backup.stop()
         for t in (tasks[0], tasks[1]):
             try:
                 await asyncio.wait_for(t, 4)
@@ -197,6 +227,10 @@ class App:
             await asyncio.wait_for(tasks[3], 5)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
             tasks[3].cancel()
+        try:
+            await asyncio.wait_for(tasks[5], 5)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+            tasks[5].cancel()
         await self.history.close()      # final commit
         await runner.cleanup()
         log.info("stopped at %s", datetime.now(timezone.utc).isoformat())

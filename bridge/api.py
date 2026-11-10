@@ -19,6 +19,7 @@ from . import registers as rg
 from .cache import Cache, iso
 from .commands import COMMANDS, CommandExecutor
 from .config import LIMITS, Config, validate_editable
+from . import export as ex
 from .history import History, HistoryUnavailable, RequestError
 from .logbuffer import RingBufferHandler, set_level
 from .state import Runtime
@@ -121,6 +122,8 @@ class Api:
                  is_mqtt_connected: Callable[[], bool] | None = None,
                  history: History | None = None) -> None:
         self.history = history
+        self.jobs: Any = None        # DailyJobs (warnings), set by the app
+        self.backup: Any = None      # Backup (status), set by the app
         self.cfg, self.rt, self.cache, self.exe, self.ring = cfg, rt, cache, executor, ring
         self.sessions = sessions
         self.limiter = LoginLimiter()
@@ -162,6 +165,10 @@ class Api:
             "history": self.history.status() if self.history else
             {"days": c.history_days, "samples": 0, "samples_5m": 0, "oldest": None,
              "detail_oldest": None, "db_size_bytes": 0},
+            "warnings": self.jobs.warnings_view() if self.jobs else {"checked": None, "active": []},
+            "backup": self.backup.status() if self.backup else
+            {"enabled": c.backup_keep > 0, "keep": c.backup_keep, "count": 0, "last_at": None,
+             "last_file": None, "last_size_bytes": None, "last_error": None},
             "dongle": {"state": rt.dongle, "host": c.huawei_host, "port": c.huawei_port,
                        "unit_id": c.huawei_unit_id},
             "mqtt": {"state": "connected" if rt.mqtt_connected else "disconnected",
@@ -281,6 +288,53 @@ class Api:
         q = request.query
         return await self._hist_call(self._hist().daily(q.get("from"), q.get("to")))
 
+    async def get_daily_context(self, request: web.Request) -> web.Response:
+        return await self._hist_call(self._hist().context(request.query.get("date")))
+
+    # -- CSV export (rc4) ---------------------------------------------------------------
+    async def _stream_csv(self, request: web.Request, kind: str, from_name: str, to_name: str,
+                          chunks: Any) -> web.StreamResponse:
+        resp = web.StreamResponse(headers={
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="huawei2mqtt-{kind}-{from_name}_{to_name}.csv"',
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        await resp.prepare(request)
+        try:
+            async for chunk in chunks:
+                await resp.write(chunk)
+        except (ConnectionResetError, HistoryUnavailable, RequestError) as exc:
+            log.warning("csv export aborted: %s", exc)
+        await resp.write_eof()
+        return resp
+
+    async def export_samples(self, request: web.Request) -> web.StreamResponse:
+        q, h = request.query, self._hist()
+        try:
+            sep = ex.parse_sep(q.get("sep"))
+            f, t, d_from, d_to = h.export_range(q.get("from"), q.get("to"))
+            fields = h.export_fields(q.get("fields"))
+            await h._run_db(lambda: None)
+        except RequestError as exc:
+            return json_response({"error": exc.reason}, 400)
+        except HistoryUnavailable:
+            return json_response({"error": "history_unavailable"}, 503)
+        return await self._stream_csv(request, "samples", d_from, d_to,
+                                      ex.samples_csv(h, f, t, fields, sep))
+
+    async def export_daily(self, request: web.Request) -> web.StreamResponse:
+        q, h = request.query, self._hist()
+        try:
+            sep = ex.parse_sep(q.get("sep"))
+            data = await h.daily(q.get("from"), q.get("to"))
+        except RequestError as exc:
+            return json_response({"error": exc.reason}, 400)
+        except HistoryUnavailable:
+            return json_response({"error": "history_unavailable"}, 503)
+        days = data["days"]
+        a = q.get("from") or (days[0]["date"] if days else "")
+        b = q.get("to") or (days[-1]["date"] if days else "")
+        return await self._stream_csv(request, "daily", a, b, ex.daily_csv(h, data, sep))
+
     async def get_awards(self, request: web.Request) -> web.Response:
         return await self._hist_call(self._hist().awards(self.cache.value("total_yield_kwh")))
 
@@ -301,11 +355,18 @@ class Api:
 
     def _serve(self, p: Path) -> web.Response:
         ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-        if p.suffix == ".js":
+        extra: dict[str, str] = {}
+        if p.name == "sw.js":
+            ctype = "text/javascript"
+            extra = {"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"}
+        elif p.suffix == ".js":
             ctype = "application/javascript"
-        text = ctype.startswith("text/") or ctype in ("application/javascript", "application/json")
+        elif p.suffix == ".webmanifest":
+            ctype = "application/manifest+json"
+        text = ctype.startswith("text/") or ctype in (
+            "application/javascript", "application/json", "application/manifest+json")
         return web.Response(body=p.read_bytes(), content_type=ctype,
-                            charset="utf-8" if text else None)
+                            charset="utf-8" if text else None, headers=extra)
 
     async def index(self, request: web.Request) -> web.Response:
         p = self._file("index.html")
@@ -338,6 +399,9 @@ class Api:
             web.post("/api/write-test", self.write_test),
             web.get("/api/history", self.get_history),
             web.get("/api/daily", self.get_daily),
+            web.get("/api/daily/context", self.get_daily_context),
+            web.get("/api/export/samples.csv", self.export_samples),
+            web.get("/api/export/daily.csv", self.export_daily),
             web.get("/api/awards", self.get_awards),
             web.post("/api/history/clear", self.history_clear),
             web.get("/", self.index),

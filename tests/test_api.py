@@ -124,7 +124,7 @@ async def test_settings_get_hides_secrets(client, cfg):
     assert set(d["editable"]) == {"poll_interval_live", "poll_interval_static", "log_level",
                                   "mqtt_retain", "mqtt_flat_topics", "history_days",
                                       "feed_in_tariff", "currency", "co2_factor",
-                                      "milestone_step_kwh"}
+                                      "milestone_step_kwh", "backup_keep"}
     assert not any(k in d["readonly"] for k in ("mqtt_password", "portal_password",
                                                 "mqtt_username"))
 
