@@ -67,3 +67,19 @@ export function ymd(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
   return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
 }
+
+// "Schoene" Achsenskala: Schrittweite 1/2/2,5/5 x 10^n
+export function nice(lo, hi, n = 4) {
+  let top = hi;
+  if (!(top > lo)) top = lo + 1;
+  const raw = (top - lo) / n; const mag = 10 ** Math.floor(Math.log10(raw)); const f = raw / mag;
+  const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+  return { min: Math.floor(lo / step + 1e-9) * step, max: Math.ceil(top / step - 1e-9) * step, step };
+}
+
+// CSV-Download ueber einen temporaeren Link (Trenner/Dezimalkomma: Semikolon ausser in Englisch)
+export const csvSep = () => (lang === 'en' ? 'comma' : 'semicolon');
+export function download(url) {
+  const a = h('a', { href: url, download: '' });
+  document.body.append(a); a.click(); a.remove();
+}

@@ -2,15 +2,19 @@
 
 Start:  python3 tests/ui/mock_server.py [--port 8099] [--password demo] [--state online|stale|offline]
         [--no-password] [--shutdown-allowed] [--real-time] [--night] [--dropouts N]
-        [--sun-now HH:MM] [--peak-ts-null] [--empty] [--legacy] [--long]
+        [--sun-now HH:MM] [--peak-ts-null] [--empty] [--legacy] [--long] [--warnings]
 Dann http://127.0.0.1:8099/ oeffnen. Liefert die Portal-API aus topic-spec.md (rc1 + Erweiterung rc2)
 mit realistischen Tagwerten eines 10-kW-Geraets. Zusaetzlich:
   --dropouts N     inverter.dropouts_24h (1-2 = Hinweis, ab 3 gelb)
   --sun-now HH:MM  Tageskurve im Verlauf so verschieben, dass "jetzt" dieser Uhrzeit entspricht (Screenshots)
   --peak-ts-null   energy.peak_power_today_ts = null
   --empty          frische Installation: Verlauf/Tageswerte/Awards leer
-  --long           rc3: 2 Jahre 5-Minuten-Daten (samples_5m, saisonal), Feindaten nur history_days; resolution_s
+  --long           rc3: ab 2024-03-12 (ca. 3 Jahre) 5-Minuten-Daten (samples_5m, saisonal), Feindaten nur history_days; resolution_s
   --legacy         altes Backend: /api/history, /api/daily, /api/awards, /api/history/clear liefern 404
+rc4 (immer aktiv, ausser mit --legacy): /api/daily/context, status.warnings/backup, limits.backup_keep,
+  /api/export/samples.csv und daily.csv, /manifest.webmanifest, /sw.js. Mit --long reichen die Tageswerte
+  ab 2024-03-12 (wie die echte Datenbank, drei Jahre); ohne --long ca. 430 Tage.
+  --warnings       status.warnings.active mit Isolations- und String-Warnung
 """
 import argparse
 import json
@@ -28,22 +32,23 @@ WEB = Path(__file__).resolve().parents[2] / "web"
 STARTED = datetime.now(timezone.utc)
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8",
-        ".svg": "image/svg+xml"}
+        ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json"}
 
 CFG = {"password": "demo", "state": "online", "shutdown": False, "real_time": False, "dropouts": 0,
-       "sun_shift": 0.0, "peak_ts_null": False, "empty": False, "legacy": False, "long": False}
-LONG_DAYS = 730
+       "sun_shift": 0.0, "peak_ts_null": False, "empty": False, "legacy": False, "long": False, "warnings": False}
+LONG_SINCE = datetime(2024, 3, 12).date()
+LONG_DAYS = 980   # reicht bis 2024-03-12 zurueck
 SESSIONS = set()
 FAILS = []  # Zeitstempel fehlgeschlagener Logins
 LOGS = []
 SETTINGS = {"poll_interval_live": 10, "poll_interval_static": 300, "log_level": "INFO",
             "mqtt_retain": True, "mqtt_flat_topics": True,
             "history_days": 90, "feed_in_tariff": 0.081, "currency": "EUR", "co2_factor": 0.38,
-            "milestone_step_kwh": 1000}
+            "milestone_step_kwh": 1000, "backup_keep": 7}
 LIMITS = {"poll_interval_live": {"min": 5, "max": 300}, "poll_interval_static": {"min": 60, "max": 3600},
           "log_level": {"choices": ["DEBUG", "INFO", "WARNING", "ERROR"]},
           "history_days": {"min": 1, "max": 365}, "feed_in_tariff": {"min": 0, "max": 5},
-          "co2_factor": {"min": 0, "max": 2}, "milestone_step_kwh": {"min": 100, "max": 100000}}
+          "co2_factor": {"min": 0, "max": 2}, "milestone_step_kwh": {"min": 100, "max": 100000}, "backup_keep": {"min": 0, "max": 90}}
 CONTROL = {"power_limit_pct": 100.0, "power_limit_w": 10000}
 WRITE = {"state": "unverified", "last_cmd": 0.0}
 
@@ -92,7 +97,7 @@ def snapshot():
                  "voltage_l1_v": 231.2, "voltage_l2_v": 230.6, "voltage_l3_v": 232.1,
                  "current_l1_a": round(ph / 231, 3), "current_l2_a": round(ph / 230.6, 3),
                  "current_l3_a": round(ph / 232, 3), "ts": ts},
-        "energy": {"daily_yield_kwh": 31.42, "total_yield_kwh": 18234.77, "peak_power_today_w": 8120,
+        "energy": {"daily_yield_kwh": today_yield(), "total_yield_kwh": 18234.77, "peak_power_today_w": 8120,
                    "peak_power_today_ts": None if CFG["peak_ts_null"] else iso(time.time() - 7200), "ts": ts},
         "inverter": {"status_code": 512 if ac > 30 else 0, "status": status, "running": ac > 30,
                      "efficiency_pct": 98.4, "internal_temperature_c": 41.3, "insulation_resistance_mohm": 6.0,
@@ -164,6 +169,25 @@ def history_info():
             "db_size_bytes": int(days * 8640 * 0.96 * 118 + n5 * 118)}
 
 
+def warnings_info():
+    act = []
+    if CFG["warnings"]:
+        act = [{"id": "insulation_low", "since": iso(time.time() - 3 * 86400), "value": 0.45, "baseline": 6.0, "unit": "MΩ"},
+               {"id": "string_imbalance", "since": iso(time.time() - 2 * 86400), "value": 36.0, "baseline": 54.0, "unit": "%"}]
+    return {"checked": iso(time.time() - 3600), "active": act}
+
+
+def backup_info():
+    keep = SETTINGS["backup_keep"]
+    if not keep:
+        return {"enabled": False, "keep": 0, "count": 0, "last_at": None, "last_file": None, "last_size_bytes": None, "last_error": None}
+    last = datetime.now().replace(hour=3, minute=2, second=11, microsecond=0)
+    if last > datetime.now():
+        last -= timedelta(days=1)
+    return {"enabled": True, "keep": keep, "count": min(keep, 5), "last_at": iso(last.timestamp()),
+            "last_file": f"huawei2mqtt-{last.date().isoformat()}.db", "last_size_bytes": 9_437_184, "last_error": None}
+
+
 def status():
     s = CFG["state"]
     return {
@@ -177,6 +201,7 @@ def status():
         "mqtt": {"state": "connected", "host": "192.168.1.3", "port": 1883, "last_error": None, "base_topic": "huawei/HV2260000000"},
         "write_access": WRITE["state"], "shutdown_allowed": CFG["shutdown"],
         "auth": {"password_set": bool(CFG["password"]), "logged_in": False},
+        "warnings": warnings_info(), "backup": backup_info(),
     }
 
 
@@ -202,13 +227,31 @@ def _day_factor(day):
     return 0.30 + 0.70 * _noise(day.toordinal() * 1.7)
 
 
+def _midnight_today():
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _shift(ts):
+    """--sun-now verschiebt nur den heutigen Tag (Vortage bleiben konsistent zu den Tageswerten)."""
+    return CFG["sun_shift"] if ts >= _midnight_today() else 0.0
+
+
+def day_window(d):
+    """Produktionsfenster (Stunden) eines Kalendertags: Sommer lang, Winter kurz."""
+    season = 0.5 - 0.5 * math.cos(2 * math.pi * (d.timetuple().tm_yday - 15) / 365)
+    return 7.4 - 2.2 * season + 0.5 * _noise(d.toordinal()), 16.8 + 3.0 * season + 0.4 * _noise(d.toordinal() + 3)
+
+
 def pv_power(ts):
-    """Synthetische PV-Leistung (W) zum Zeitpunkt ts: Sonnenkurve, Tageswetter, schnelle Wolkenspruenge."""
-    lt = datetime.fromtimestamp(ts + CFG["sun_shift"])
-    hr = lt.hour + lt.minute / 60 + lt.second / 3600
-    if not 5.8 < hr < 19.8:
+    """Synthetische PV-Leistung (W) zum Zeitpunkt ts: Sonnenkurve im Tagesfenster, Tageswetter, schnelle Wolkenspruenge."""
+    lt = datetime.fromtimestamp(ts + _shift(ts))
+    if lt.date() != datetime.fromtimestamp(ts).date():   # --sun-now: verschobene Zeit liegt auf einem anderen Tag -> keine Kurve
         return 0.0
-    base = math.sin((hr - 5.8) / 14 * math.pi) ** 1.25
+    hr = lt.hour + lt.minute / 60 + lt.second / 3600
+    start, end = day_window(lt.date())
+    if not start < hr < end:
+        return 0.0
+    base = math.sin((hr - start) / (end - start) * math.pi) ** 1.25
     slow = 0.85 + 0.15 * math.sin(ts / 1500 + lt.toordinal())
     fast = 1.0 - 0.45 * max(0.0, _noise(int(ts // 10)) - 0.72) / 0.28 * (0.5 + 0.5 * math.sin(ts / 330))
     seas = 1.0
@@ -218,9 +261,10 @@ def pv_power(ts):
 
 
 def yield_so_far(ts):
-    lt = datetime.fromtimestamp(ts + CFG["sun_shift"])
+    lt = datetime.fromtimestamp(ts + _shift(ts))
     hr = lt.hour + lt.minute / 60
-    x = min(1.0, max(0.0, (hr - 5.8) / 14))
+    start, end = day_window(lt.date())
+    x = min(1.0, max(0.0, (hr - start) / (end - start)))
     return 0.5 * (1 - math.cos(math.pi * x)) * 62 * _day_factor(lt.date())
 
 
@@ -315,27 +359,43 @@ def _parse_iso(v, default):
         return default
 
 
+YS = {"scale": 1.0}
+
+
+def today_yield():
+    """Heutiger Tagesertrag (kWh) bis jetzt: Tageserwartung (wie build_daily) x Fortschritt der Sonnenkurve."""
+    now = time.time()
+    d = datetime.now().date()
+    season = 0.5 - 0.5 * math.cos(2 * math.pi * (d.timetuple().tm_yday - 15) / 365)
+    full = (5 + 58 * season) * (0.35 + 0.65 * _noise(d.toordinal() * 1.7)) * YS["scale"]
+    lt = datetime.fromtimestamp(now + _shift(now))
+    start, end = day_window(lt.date())
+    x = min(1.0, max(0.0, (lt.hour + lt.minute / 60 - start) / (end - start)))
+    return round(full * 0.5 * (1 - math.cos(math.pi * x)), 2)
+
+
 def build_daily():
-    """Gut ein Jahr Tageswerte (Saison + Wetter); aeltere ~120 Tage als 'import' ohne Peak-Zeit."""
+    """Vergangene Tageswerte (Saison + Wetter); mit --long ab 2024-03-12 (drei Jahre), sonst 430 Tage.
+    Aeltere Tage (> 300 Tage) als 'import' ohne Peak-Zeit. Erst-/Letztertrag passen zur Verlaufskurve (day_window)."""
     today = datetime.now().date()
-    n = 430
-    rows, total = [], 18234.77 - 31.42
+    n = (today - LONG_SINCE).days if CFG["long"] else 430
     seq = []
     for i in range(1, n + 1):
         d = today - timedelta(days=i)
         season = 0.5 - 0.5 * math.cos(2 * math.pi * (d.timetuple().tm_yday - 15) / 365)
-        y = round((5 + 58 * season) * (0.35 + 0.65 * _noise(d.toordinal() * 1.7)) , 2)
-        seq.append((d, y))
-    # rueckwaerts den Zaehlerstand ableiten
+        seq.append((d, (5 + 58 * season) * (0.35 + 0.65 * _noise(d.toordinal() * 1.7))))
+    tot = sum(y for _, y in seq)
+    scale = min(1.0, 17800 / tot) if tot else 1.0   # Zaehlerstand bleibt positiv
+    YS["scale"] = scale
+    seq = [(d, round(y * scale, 2)) for d, y in seq]
     totals = {}
-    t = total
-    for d, y in seq:
+    t = 18234.77 - 31.42
+    for d, y in seq:   # rueckwaerts den Zaehlerstand ableiten
         totals[d] = round(t, 2)
         t -= y
+    rows = []
     for d, y in reversed(seq):
-        season = 0.5 - 0.5 * math.cos(2 * math.pi * (d.timetuple().tm_yday - 15) / 365)
-        start_h = 7.4 - 2.2 * season + 0.5 * _noise(d.toordinal())
-        end_h = 16.8 + 3.0 * season + 0.4 * _noise(d.toordinal() + 3)
+        start_h, end_h = day_window(d)
         imp = (today - d).days > 300
         peak = round((3400 + 6500 * min(1, y / 55)) + 120 * _noise(d.toordinal() + 9))
 
@@ -345,23 +405,96 @@ def build_daily():
                      "peak_power_w": peak, "peak_ts": None if imp else at(start_h + (end_h - start_h) * 0.5),
                      "first_production_ts": at(start_h), "last_production_ts": at(end_h),
                      "production_s": int((end_h - start_h) * 3600), "source": "import" if imp else "bridge"})
-    rows.append({"date": today.isoformat(), "yield_kwh": 31.42, "total_yield_kwh": 18234.77, "peak_power_w": 8120,
-                 "peak_ts": iso(time.time() - 7200), "first_production_ts": iso(time.time() - 3600 * 6),
-                 "last_production_ts": None, "production_s": 21000, "source": "bridge"})
     return rows
 
 
 DAILY = build_daily()
 
 
+def today_row():
+    """Heutiger Tag live: Erst-/Letztertrag aus der synthetischen Kurve (last = null, solange noch Produktion)."""
+    now = time.time()
+    first = last = None
+    tt = _midnight_today()
+    while tt <= now:
+        if pv_power(tt) > 0:
+            first = first or tt
+            last = tt
+        tt += 300
+    producing = last is not None and now - last < 900
+    return {"date": datetime.now().date().isoformat(), "yield_kwh": today_yield() if first else 0.0, "total_yield_kwh": 18234.77,
+            "peak_power_w": 8120 if first else 0, "peak_ts": iso(time.time() - 7200) if first else None,
+            "first_production_ts": iso(first) if first else None,
+            "last_production_ts": None if (producing or not last) else iso(last),
+            "production_s": int(last - first) if first else None, "source": "bridge"}
+
+
 def daily_rows(q=None):
     if CFG["empty"] or DAILY_CLEARED["v"]:
         return []
-    rows = DAILY
+    rows = DAILY + [today_row()]
     if q:
         f, to = q.get("from", [None])[0], q.get("to", [None])[0]
         rows = [r for r in rows if (not f or r["date"] >= f) and (not to or r["date"] <= to)]
     return rows
+
+
+def context(date_s):
+    """Wie die Bridge (topic-spec rc4): Kennzahlen eines Tages im Vergleich."""
+    rows = {r["date"]: r for r in daily_rows()}
+    d = datetime.strptime(date_s, "%Y-%m-%d").date()
+    cur = rows.get(date_s)
+    y = cur["yield_kwh"] if cur else None
+    yd = rows.get((d - timedelta(days=1)).isoformat())
+    try:
+        ly = d.replace(year=d.year - 1)
+    except ValueError:
+        ly = d.replace(year=d.year - 1, day=28)
+    lyr = rows.get(ly.isoformat())
+    month = [r for r in rows.values() if r["date"][5:7] == date_s[5:7] and r["yield_kwh"] is not None]
+    others = [r["yield_kwh"] for r in month if r["date"] != date_s]
+    return {"date": date_s, "yield_kwh": y, "yesterday_kwh": yd["yield_kwh"] if yd else None,
+            "last_year_same_day_kwh": lyr["yield_kwh"] if lyr else None,
+            "avg_month_kwh": round(sum(others) / len(others), 2) if len(others) >= 5 else None,
+            "rank_all_time": 1 + sum(1 for r in rows.values() if r["yield_kwh"] > y) if y is not None else None,
+            "rank_month": 1 + sum(1 for r in month if r["yield_kwh"] > y) if y is not None else None,
+            "days_all_time": len(rows), "days_month": len(month)}
+
+
+def _csv(header, lines, sep):
+    dec = (lambda v: str(v).replace(".", ",")) if sep == ";" else str
+    out = [sep.join(header)]
+    for ln in lines:
+        out.append(sep.join("" if v is None else (dec(v) if isinstance(v, (int, float)) else str(v)) for v in ln))
+    return ("\ufeff" + "\r\n".join(out) + "\r\n").encode("utf-8")
+
+
+def export_samples(q):
+    sep = ";" if q.get("sep", ["comma"])[0] == "semicolon" else ","
+    now = time.time()
+    t1 = _parse_iso(q.get("to", [None])[0], now)
+    t0 = _parse_iso(q.get("from", [None])[0], _midnight_today())
+    if t1 - t0 > 400 * 86400:
+        return None, None
+    fields = [f for f in (q.get("fields", [""])[0] or ",".join(UNIT)).split(",") if f in UNIT]
+    step = max(300.0, (t1 - t0) / 5000)
+    lines, tt = [], t0
+    while tt <= t1:
+        lines.append([datetime.fromtimestamp(tt).strftime("%Y-%m-%d %H:%M:%S"), int(tt)] + [field_value(f, tt) for f in fields])
+        tt += step
+    name = f"huawei2mqtt-samples-{datetime.fromtimestamp(t0).date()}_{datetime.fromtimestamp(t1).date()}.csv"
+    return _csv(["time_local", "epoch"] + fields, lines, sep), name
+
+
+def export_daily(q):
+    sep = ";" if q.get("sep", ["comma"])[0] == "semicolon" else ","
+    rows = daily_rows(q)
+    loc = lambda v: datetime.fromisoformat(v).astimezone().strftime("%H:%M") if v else None
+    lines = [[r["date"], r["yield_kwh"], r["total_yield_kwh"], r["peak_power_w"], loc(r["peak_ts"]), loc(r["first_production_ts"]),
+              loc(r["last_production_ts"]), round(r["production_s"] / 3600, 2) if r["production_s"] else None] for r in rows]
+    f, to = q.get("from", [""])[0], q.get("to", [""])[0]
+    return _csv(["date", "yield_kwh", "total_yield_kwh", "peak_power_w", "peak_time_local", "first_production_local",
+                 "last_production_local", "production_h"], lines, sep), f"huawei2mqtt-daily-{f}_{to}.csv"
 
 
 def awards_payload():
@@ -453,6 +586,8 @@ class H(BaseHTTPRequestHandler):
     def _static(self, path):
         if path in ("/", ""):
             f = WEB / "index.html"
+        elif path in ("/manifest.webmanifest", "/sw.js"):
+            f = WEB / path[1:]
         elif path.startswith("/static/i18n/") or path.startswith("/i18n/"):
             f = WEB / "i18n" / path.rsplit("/", 1)[1]
         elif path.startswith("/static/"):
@@ -462,7 +597,8 @@ class H(BaseHTTPRequestHandler):
         f = f.resolve()
         if WEB.resolve() not in f.parents or not f.is_file():
             return self._send(404, {"error": "not_found"})
-        self._send(200, f.read_bytes(), MIME.get(f.suffix, "application/octet-stream"))
+        hdr = {"Service-Worker-Allowed": "/"} if f.name == "sw.js" else None
+        self._send(200, f.read_bytes(), MIME.get(f.suffix, "application/octet-stream"), hdr)
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -482,6 +618,20 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"entries": [e for e in LOGS if e["seq"] > since]})
         if p == "/api/settings":
             return self._send(200, settings())
+        if p in ("/api/daily/context", "/api/export/samples.csv", "/api/export/daily.csv"):
+            if CFG["legacy"]:
+                return self._send(404, {"error": "not_found"})
+            q = parse_qs(u.query)
+            if p == "/api/daily/context":
+                ds = q.get("date", [datetime.now().date().isoformat()])[0]
+                try:
+                    return self._send(200, context(ds))
+                except ValueError:
+                    return self._send(400, {"error": "bad_date"})
+            body, name = export_samples(q) if p.endswith("samples.csv") else export_daily(q)
+            if body is None:
+                return self._send(400, {"error": "range_too_large"})
+            return self._send(200, body, "text/csv; charset=utf-8", {"Content-Disposition": f'attachment; filename="{name}"'})
         if p in ("/api/history", "/api/daily", "/api/awards"):
             if CFG["legacy"]:
                 return self._send(404, {"error": "not_found"})
@@ -618,14 +768,17 @@ def main():
     ap.add_argument("--sun-now", default="", help="HH:MM: Tageskurve des Verlaufs so verschieben, dass jetzt = diese Uhrzeit")
     ap.add_argument("--peak-ts-null", action="store_true")
     ap.add_argument("--empty", action="store_true", help="frische Installation ohne Verlauf/Tageswerte")
-    ap.add_argument("--long", action="store_true", help="rc3: 2 Jahre 5-Minuten-Daten")
+    ap.add_argument("--long", action="store_true", help="rc3: ab 2024-03-12 (ca. 3 Jahre) 5-Minuten-Daten")
+    ap.add_argument("--warnings", action="store_true", help="rc4: status.warnings.active mit zwei Warnungen")
     ap.add_argument("--legacy", action="store_true", help="aelteres Backend: neue Endpunkte -> 404")
     a = ap.parse_args()
     if a.sun_now:
         hh, mm = (int(x) for x in a.sun_now.split(":"))
         n = datetime.now()
         CFG["sun_shift"] = (hh * 3600 + mm * 60) - (n.hour * 3600 + n.minute * 60 + n.second)
-    CFG.update(dropouts=a.dropouts, peak_ts_null=a.peak_ts_null, empty=a.empty, legacy=a.legacy, long=a.long)
+    CFG.update(dropouts=a.dropouts, peak_ts_null=a.peak_ts_null, empty=a.empty, legacy=a.legacy, long=a.long, warnings=a.warnings)
+    global DAILY
+    DAILY = build_daily()   # abhaengig von --long
     CFG.update(password="" if a.no_password else a.password, state=a.state, shutdown=a.shutdown_allowed, real_time=a.real_time, night=a.night)
     start = time.time() - 120
     for i, (lv, lg, m) in enumerate([

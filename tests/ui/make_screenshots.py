@@ -1,9 +1,10 @@
-"""Erzeugt die Doku-Bilder (docs/images/*.png, portal-tour.gif) aus dem Mock-Server.
+"""Erzeugt die Doku-Bilder (docs/images/*.png, portal-tour.gif) aus dem Mock-Server (rc4: inkl. Vergleich/Erträge, Warnhinweis).
 
 Nutzt nur Mock-Daten (Fake-Seriennummer), niemals das echte Geraet.
 Aufruf:  python tests/ui/make_screenshots.py     (benoetigt playwright + Chrome, ffmpeg fuer das GIF)
 Optional: PNG-Optimierung per pngquant, falls installiert.
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "docs" / "images"
+OUT = Path(os.environ.get("H2M_SHOTS_OUT") or ROOT / "docs" / "images")   # Ziel überschreibbar (Probelauf)
 PORT = 8199
 URL = f"http://127.0.0.1:{PORT}/"
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
@@ -59,10 +60,30 @@ def shot_range(page, preset, name, wait=1500):
     print("ok", name)
 
 
+def shot_compare(page, prefix):
+    """rc4: Tagesverlauf mit Vorjahreslinien und Erträge (Säulen, Monat mit Vorjahren); stellt danach den Normalzustand her."""
+    page.goto(URL + "#history")
+    page.wait_for_timeout(800)
+    page.click("#hist-presets button:nth-child(1)")   # Heute
+    page.wait_for_timeout(600)
+    page.select_option("#hist-cmp", "all")
+    page.wait_for_timeout(1800)
+    page.screenshot(path=str(OUT / f"{prefix}history-compare-light.png"))
+    print("ok", f"{prefix}history-compare-light.png")
+    page.click("#hist-mode button:nth-child(2)")      # Erträge
+    page.wait_for_timeout(500)
+    page.click("#yld-periods button:nth-child(2)")    # Monat
+    page.wait_for_timeout(900)
+    page.screenshot(path=str(OUT / f"{prefix}yields-light.png"))
+    print("ok", f"{prefix}yields-light.png")
+    page.click("#hist-mode button:nth-child(1)")
+    page.select_option("#hist-cmp", "off")
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     srv = subprocess.Popen([sys.executable, str(ROOT / "tests/ui/mock_server.py"), "--port", str(PORT),
-                            "--shutdown-allowed", "--sun-now", "13:20", "--long"], stdout=subprocess.DEVNULL)
+                            "--shutdown-allowed", "--sun-now", "13:20", "--long", "--warnings"], stdout=subprocess.DEVNULL)
     tmp = Path(tempfile.mkdtemp())
     try:
         wait_up()
@@ -87,6 +108,7 @@ def main():
                 shot(pg, "history", f"history-{scheme}.png", 2000)
                 if scheme == "light":
                     shot_range(pg, "1 Jahr", "history-year-light.png")
+                    shot_compare(pg, "")
                 shot(pg, "awards", f"awards-{scheme}.png", 1500)
                 ctx.close()
             ctx = b.new_context(storage_state=str(state), **desk)
@@ -99,6 +121,8 @@ def main():
                 if scheme == "light":
                     shot(pg, "overview", "mobile.png", 1500, countdown=True)
                 shot(pg, "history", f"history-mobile-{scheme}.png", 2000)
+                if scheme == "light":
+                    shot_compare(pg, "mobile-")
                 shot(pg, "awards", f"awards-mobile-{scheme}.png", 1500)
                 ctx.close()
 

@@ -76,7 +76,11 @@ def test_dynamic_key_groups_present(dicts):
               "aw.rank.best_month", "aw.rank.best_year", "aw.rank.peak_power", "aw.rank.longest_day",
               "aw.rank.earliest_start"):
         assert k in dicts["de"], k
-    for f in ("history_days", "feed_in_tariff", "currency", "co2_factor", "milestone_step_kwh"):
+    for k in ("hist.mode_line", "hist.mode_yields", "hist.cmp_off", "hist.cmp_prev", "hist.cmp_all", "hist.yld_week",
+              "hist.yld_month", "hist.yld_year", "ov.warn_insulation_low_title", "ov.warn_insulation_low_help",
+              "ov.warn_string_imbalance_title", "ov.warn_string_imbalance_help", "ov.warn_unknown_title", "ov.warn_unknown_help"):
+        assert k in dicts["de"], k
+    for f in ("history_days", "feed_in_tariff", "currency", "co2_factor", "milestone_step_kwh", "backup_keep"):
         assert f"field.{f}" in dicts["de"], f
     for f in ("poll_interval_live", "poll_interval_static", "log_level", "mqtt_retain", "mqtt_flat_topics",
               "huawei_host", "huawei_port", "huawei_unit_id", "mqtt_host", "mqtt_port", "mqtt_username",
@@ -85,7 +89,8 @@ def test_dynamic_key_groups_present(dicts):
 
 
 def test_no_unused_keys(dicts):
-    dynamic = ("status.", "reason.", "field.", "group.", "cmd.", "light.", "hist.preset.", "aw.rank.")
+    dynamic = ("status.", "reason.", "field.", "group.", "cmd.", "light.", "hist.preset.", "aw.rank.",
+               "hist.mode_", "hist.cmp_", "hist.yld_", "ov.warn_")
     used = used_keys()
     unused = [k for k in dicts["de"] if k not in used and not k.startswith(dynamic)]
     assert not unused, unused

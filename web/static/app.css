@@ -406,3 +406,47 @@ dialog input { width: 100%; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ---- rc4: Einordnung, Warnungen ---- */
+.ctx { margin: -.4rem 0 0; color: var(--muted); font-size: .85rem; line-height: 1.45; }
+@media (max-width: 700px) { .ctx { text-align: center; } }
+.warnbox { margin-bottom: 1rem; padding: 1rem 1.2rem; border-radius: var(--radius); background: var(--warn-bg); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); border-left: 6px solid var(--accent); }
+.warnbox h2 { display: flex; align-items: center; gap: .55rem; margin: 0 0 .5rem; font-size: 1.05rem; color: var(--warn); }
+.warn-item { padding: .55rem 0; border-top: 1px solid color-mix(in srgb, var(--warn) 25%, transparent); }
+.warn-item:first-of-type { border-top: 0; padding-top: 0; }
+.warn-item strong { display: block; }
+.warn-item p { margin: .2rem 0; }
+.warn-item small { color: var(--muted); font-size: .85rem; }
+.bad-text { color: var(--bad); }
+
+/* ---- rc4: Verlauf, Vergleich, Erträge ---- */
+.hist-bar { align-items: center; }
+.cmp-sel { display: inline-flex; align-items: center; gap: .5rem; font-weight: 500; color: var(--muted); }
+.cmp-sel select { min-height: 38px; padding: .2rem .6rem; border-radius: 12px; }
+.hist-bar .btn { min-height: 42px; }
+.yld-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem; margin-bottom: .7rem; }
+.yld-nav strong { min-width: 8rem; text-align: center; font-size: 1.02rem; }
+.yld-nav .btn.nav { min-width: 44px; min-height: 42px; font-size: 1.4rem; line-height: 1; padding: 0 .7rem; }
+.yld-nav .yld-csv { margin-left: auto; min-height: 42px; }
+.btn:disabled { opacity: .4; cursor: default; }
+.hist-svg .cl { fill: none; stroke: var(--c); stroke-width: 1.6; stroke-dasharray: 6 4; stroke-linejoin: round; stroke-linecap: round; opacity: .72; }
+.hist-svg .cmp .dot { fill: var(--c); opacity: .72; }
+.hist-svg .hd.cmp { opacity: .85; }
+.yc-0 { --c: var(--c1); } .yc-1 { --c: var(--c3); } .yc-2 { --c: var(--c5); } .yc-3 { --c: var(--c2); }
+.legend li.yr b { margin-left: .1rem; }
+.legend li.yr small { color: var(--muted); }
+.legend li.cmp i { height: 0; background: none; border-top: 3px dashed var(--c); border-radius: 0; opacity: .8; }
+.hist-tip .row.cmp i { height: 0; background: none; border-top: 3px dashed var(--c); border-radius: 0; width: 12px; }
+.yb-0 { --c: var(--c0); } .yb-1 { --c: var(--c1); } .yb-2 { --c: var(--c3); } .yb-3 { --c: var(--c5); } .yb-4 { --c: var(--c2); }
+.hist-svg .yb rect { fill: var(--c); }
+.hist-svg .yb:not(.yb-0) rect { opacity: .85; }
+.hist-svg .yb rect.part { opacity: .5; }
+.hist-svg .yb text.bv { fill: var(--text); font-size: 10px; font-variant-numeric: tabular-nums; }
+.hist-svg .hl { fill: var(--c0); opacity: .1; pointer-events: none; }
+.hist-svg text.day { font-weight: 600; fill: var(--text); }
+@media (max-width: 520px) {
+  .hist-bar { gap: .5rem .6rem; }
+  .yld-nav .yld-csv { margin-left: 0; }
+  .seg button { padding: .3rem .65rem; }
+}

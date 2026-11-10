@@ -4,9 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f59e0b">
+<meta name="theme-color" content="#f59e0b" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1217" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="huawei2mqtt">
 <title>huawei2mqtt</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -38,6 +44,7 @@
   <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 21V4M6 5h11l-2 3.500 2 3.500H6"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.500 7V4.500h5V7M7 7l.8 12.500h8.400L17 7M10.500 11v5M13.500 11v5"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.500 12h17M12 3.500c3 3 3 14 0 17M12 3.500c-3 3-3 14 0 17"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v10.5M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></symbol>
   <symbol id="i-temp" viewBox="0 0 24 24"><path d="M10 14.5V5a2 2 0 014 0v9.5a4 4 0 11-4 0z"/></symbol>
 </svg>
 
@@ -58,6 +65,7 @@
 
   <!-- ===== Uebersicht ===== -->
   <section id="view-overview" data-view="overview">
+    <div id="warn-box" class="warnbox" role="alert" hidden></div>
     <div class="card hero" id="hero">
       <div class="ring-wrap">
         <svg class="ring" viewBox="0 0 120 120" role="img" data-i18n-aria-label="ov.ring">
@@ -77,6 +85,7 @@
           <div class="kpi"><span class="label" data-i18n="ov.total"></span><span class="kpi-v"><span data-bind="energy.total_yield_kwh" data-digits="0">–</span> <small class="u">kWh</small></span></div>
           <div class="kpi"><span class="label" data-i18n="ov.peak"></span><span class="kpi-v"><span data-bind="energy.peak_power_today_w" data-fmt="kpipower">–</span><small class="at" id="peak-at"></small></span></div>
         </div>
+        <p class="ctx" id="ctx-line" hidden></p>
         <p class="age" id="age"></p>
         <p class="hint" id="night-hint" hidden data-i18n="ov.night_hint"></p>
       </div>
@@ -138,15 +147,25 @@
     <div class="card hist">
       <h2><svg class="ico"><use href="#i-chart"/></svg><span data-i18n="hist.title"></span><span class="live-tag" id="hist-live" hidden><i></i><span data-i18n="hist.live"></span></span></h2>
       <div class="hist-bar">
+        <div class="seg" id="hist-mode" role="group" data-i18n-aria-label="hist.mode"></div>
         <div class="seg" id="hist-presets" role="group" data-i18n-aria-label="hist.range"></div>
+        <div class="seg" id="yld-periods" role="group" data-i18n-aria-label="hist.yld_period" hidden></div>
+        <label class="cmp-sel" id="hist-cmp-wrap" hidden><span data-i18n="hist.compare"></span><select id="hist-cmp"></select></label>
         <details class="fields" id="hist-fields">
           <summary><svg class="ico"><use href="#i-list"/></svg><span data-i18n="hist.fields"></span> <span class="count" id="hist-fcount"></span></summary>
           <div class="fields-body" id="hist-fbody"></div>
         </details>
+        <button type="button" class="btn small" id="hist-csv"><svg class="ico"><use href="#i-download"/></svg><span data-i18n="hist.csv"></span></button>
       </div>
       <div class="hist-range" id="hist-range" hidden>
         <label><span data-i18n="hist.from"></span><input type="date" id="hist-from"></label>
         <label><span data-i18n="hist.to"></span><input type="date" id="hist-to"></label>
+      </div>
+      <div class="yld-nav" id="hist-nav" hidden>
+        <button type="button" class="btn small nav" id="yld-prev" data-i18n-aria-label="hist.prev" data-i18n-title="hist.prev">‹</button>
+        <strong id="yld-label"></strong>
+        <button type="button" class="btn small nav" id="yld-next" data-i18n-aria-label="hist.next" data-i18n-title="hist.next">›</button>
+        <button type="button" class="btn small yld-csv" id="yld-csv"><svg class="ico"><use href="#i-download"/></svg><span data-i18n="hist.csv_daily"></span></button>
       </div>
       <ul class="legend" id="hist-legend"></ul>
       <div class="hist-box" id="hist-box">
@@ -154,7 +173,7 @@
         <div class="hist-tip" id="hist-tip" hidden></div>
         <p class="hist-note" id="hist-note" hidden></p>
       </div>
-      <p class="muted small-text" data-i18n="hist.band"></p>
+      <p class="muted small-text" id="hist-band"></p>
       <p class="muted small-text" id="hist-res" hidden></p>
     </div>
   </section>
@@ -298,6 +317,7 @@
         <h2><svg class="ico"><use href="#i-trash"/></svg><span data-i18n="mem.title"></span></h2>
         <p class="muted" data-i18n="mem.intro"></p>
         <p class="muted" id="mem-info"></p>
+        <p class="muted" id="mem-backup" hidden></p>
         <p class="muted" id="mem-login" hidden data-i18n="mem.login"></p>
         <div class="mem-rows">
           <div class="mem-row"><div><strong data-i18n="mem.samples_btn"></strong><p class="muted" data-i18n="mem.samples_help"></p></div>

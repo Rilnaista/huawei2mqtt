@@ -1,6 +1,6 @@
 // huawei2mqtt Portal: schlankes Frontend ohne Framework. Alle Texte stammen aus web/i18n/*.json.
 import { detect, setLang, lang, t, has, applyDom, num, power, ago, time, hm } from './i18n.js';
-import { $, h, icon, api, tryT, humanize, fieldName, toast, fmt } from './common.js';
+import { $, h, icon, api, tryT, humanize, fieldName, toast, fmt, ymd } from './common.js';
 import * as hist from './history.js';
 import * as awards from './awards.js';
 
@@ -11,7 +11,7 @@ const LEVELS = { DEBUG: 10, INFO: 20, WARNING: 30, WARN: 30, ERROR: 40, CRITICAL
 
 const S = {
   status: null, values: null, settings: null, down: false, clockOffset: 0, polling: false, fastAt: 0,
-  logSeq: 0, logEntries: [], logStarted: null, ctlSig: null, setSig: null,
+  logSeq: 0, logEntries: [], logStarted: null, ctlSig: null, setSig: null, ctx: null, ctxAt: 0, ctxBusy: false,
 };
 
 const loggedIn = () => !!S.status?.auth?.logged_in;
@@ -116,7 +116,7 @@ function renderBanner() {
     tone = inv.state === 'offline' ? 'bad' : 'warn';
   } else if (S.status && !S.values?.grid) { main = t('banner.no_data'); tone = 'idle'; }
   b.hidden = !main;
-  if (main) { b.replaceChildren(main, sub ? h('small', {}, sub) : null); b.className = 'banner tone-' + tone; }
+  if (main) { b.replaceChildren(...[main, sub ? h('small', {}, sub) : null].filter(Boolean)); b.className = 'banner tone-' + tone; }
   $('main').classList.toggle('is-stale', (lost() || S.down) && !!S.values);
 }
 
@@ -214,7 +214,57 @@ function renderOverview() {
   ul.replaceChildren(...lightsData().map((l) => h('li', { class: 'light tone-' + l.tone },
     h('span', { class: 'dot', 'aria-hidden': 'true' }), icon(l.ic),
     h('div', {}, h('strong', {}, l.title), h('span', {}, l.text), l.hint ? h('span', { class: 'sub-hint' }, l.hint) : null))));
+  renderWarnings();
+  renderCtx();
   renderAge();
+  if (Date.now() - S.ctxAt > 60000) loadCtx();
+}
+
+// Fruehwarnungen (status.warnings.active): gelber Hinweis mit Handlungsempfehlung
+function renderWarnings() {
+  const box = $('warn-box');
+  const act = S.status?.warnings?.active;
+  if (!Array.isArray(act) || !act.length) { box.hidden = true; box.replaceChildren(); return; }
+  const val = (v) => (v == null ? '–' : num(v, Math.abs(v) < 10 ? 2 : 1));
+  box.replaceChildren(h('h2', {}, icon('i-alert'), h('span', {}, t('ov.warn_title'))), ...act.map((w) => {
+    const id = has(`ov.warn_${w.id}_title`) ? w.id : 'unknown';
+    const n = w.value != null && w.baseline != null && w.value < w.baseline ? 1 : 2;   // schwacher String: Anteil von String 1 gesunken -> 1
+    const u = w.unit ? '\u00a0' + w.unit : '';
+    return h('div', { class: 'warn-item' }, h('strong', {}, t(`ov.warn_${id}_title`, { n })), h('p', {}, t(`ov.warn_${id}_help`, { n })),
+      h('small', {}, t('ov.warn_detail', { since: w.since ? sinceLabel(w.since) : '–', value: val(w.value) + u, baseline: val(w.baseline) + u })));
+  }));
+  box.hidden = false;
+}
+
+// Einordnung des heutigen Ertrags (/api/daily/context): nur vorhandene Werte
+async function loadCtx() {
+  if (S.ctxBusy) return;
+  S.ctxBusy = true; S.ctxAt = Date.now();
+  try {
+    const r = await api('GET', '/api/daily/context');
+    S.ctx = r.ok && r.data ? r.data : null;
+  } finally { S.ctxBusy = false; }
+  renderCtx();
+}
+function renderCtx() {
+  const el = $('ctx-line'); const c = S.ctx;
+  const kwh = (v) => num(v, 1);
+  const parts = [];
+  if (c && !lost()) {
+    const d = ymd(c.date) || new Date();
+    if (c.avg_month_kwh != null) parts.push(t('ov.ctx_avg', { month: new Intl.DateTimeFormat(lang, { month: 'long' }).format(d), kwh: kwh(c.avg_month_kwh) }));
+    if (c.yesterday_kwh != null) parts.push(t('ov.ctx_yesterday', { kwh: kwh(c.yesterday_kwh) }));
+    if (c.last_year_same_day_kwh != null) {
+      const ly = new Date(d.getFullYear() - 1, d.getMonth(), d.getDate());
+      if (ly.getMonth() !== d.getMonth()) ly.setDate(0);   // 29.02. -> 28.02.
+      parts.push(t('ov.ctx_lastyear', { date: fmt.dateShort(ly), kwh: kwh(c.last_year_same_day_kwh) }));
+    }
+    if (c.rank_month != null && c.rank_month <= 3 && c.days_month >= 10 && c.yield_kwh > 0) {
+      parts.push(t('ov.ctx_rank', { n: num(c.rank_month), total: num(c.days_month), month: new Intl.DateTimeFormat(lang, { month: 'long' }).format(d) }));
+    }
+  }
+  el.hidden = !parts.length;
+  el.textContent = parts.join(' · ');
 }
 
 // ---------- Rendering: Alle Werte ----------
@@ -427,6 +477,13 @@ function renderMemory() {
   $('mem-info').textContent = hs ? t('mem.info', { samples: num(hs.samples ?? 0), samples5m: num(hs.samples_5m ?? 0),
     size: fmtBytes(hs.db_size_bytes), oldest: dt(hs.oldest), detail: dt(hs.detail_oldest ?? hs.oldest) }) : '';
   $('mem-info').hidden = !hs;
+  const b = S.status?.backup; const be = $('mem-backup');
+  be.hidden = !b;
+  if (b) {
+    const line = !b.enabled ? t('mem.backup_off') : !b.last_at ? t('mem.backup_none')
+      : t('mem.backup_ok', { date: fmt.dateShort(new Date(b.last_at)) + ', ' + fmt.hm(new Date(b.last_at)), size: fmtBytes(b.last_size_bytes), count: num(b.count ?? 0), keep: num(b.keep ?? 0) });
+    be.replaceChildren(...[line, b.last_error ? h('span', { class: 'bad-text' }, ' ' + t('mem.backup_error', { error: b.last_error })) : null].filter(Boolean));
+  }
   const can = loggedIn();
   $('mem-login').hidden = can || !passwordSet();
   document.querySelectorAll('#mem-card [data-scope]').forEach((b) => { b.disabled = !can; });
@@ -648,6 +705,8 @@ async function init() {
   await poll();
   route();
   startPolling();
+  // PWA: Service Worker (nur in sicherem Kontext, also HTTPS oder localhost)
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { /* optional */ });
 }
 
 init();

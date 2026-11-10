@@ -1,6 +1,7 @@
 // Seite "Verlauf": Liniendiagramm als eigenes SVG (keine Bibliothek).
-import { $, h, sv, api, fieldName, tryT, humanize, toast } from './common.js';
+import { $, h, sv, api, fieldName, tryT, humanize, toast, nice, csvSep, download } from './common.js';
 import { t, lang, num, power } from './i18n.js';
+import * as yl from './yields.js';
 
 const MAX_FIELDS = 6;
 const MAX_UNITS = 2;
@@ -9,12 +10,19 @@ const DAY = 86400000;
 const PRESET_DAYS = [3, 7, 14, 30, 90];
 const LIVE_MAX_DAYS = 7;      // Live-Nachladen nur bis zu dieser Spanne
 const GAP_MS = 600e3;         // Linien verbinden Luecken bis 600 s (5-Minuten-Daten)
+const PAD = 15 * 60e3;        // Tagesansicht: 15 min vor erstem / nach letztem Ertrag
+const CSV_MAX_DAYS = 400;
+const MODE_KEY = { line: 'hist.mode_line', yields: 'hist.mode_yields' };
+const CMP_KEY = { off: 'hist.cmp_off', prev: 'hist.cmp_prev', all: 'hist.cmp_all' };
+const KIND_KEY = { week: 'hist.yld_week', month: 'hist.yld_month', year: 'hist.yld_year' };
 
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const H = {
   preset: load('h2m-hist-preset', 'today'), fields: load('h2m-hist-fields', DEFAULT_FIELDS),
   data: null, available: [], err: null, seq: 0, active: false, lastLive: null, width: 0, range: load('h2m-hist-range', null), fb: null,
-  getStatus: () => null, timer: null, builtSig: '', hover: null, r: null, pts: [], valid: [], geo: null,
+  getStatus: () => null, timer: null, builtSig: '', hover: null, r: null, pts: [], vt: [], geo: null,
+  mode: load('h2m-hist-mode', 'line'), cmp: load('h2m-hist-cmp', 'off'), ypd: load('h2m-yld-kind', 'month'), yoff: 0,
+  daily: undefined, dailyAt: 0, years: [], cmpData: [], cmpCache: new Map(),
 };
 
 // ---------- Zeitraum ----------
@@ -32,22 +40,75 @@ function presetLabel(p) {
   return t('hist.preset.days', { n: p.slice(1) });
 }
 function midnight(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function nextMidnight(ms) { const d = new Date(ms); d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); return d.getTime(); }
 const ymd = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const parseYmd = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : null; };
+// Gleicher Kalenderzeitpunkt vor dy Jahren (29.02. -> 28.02.)
+function shiftYear(ms, dy) {
+  const d = new Date(ms); const mo = d.getMonth();
+  d.setFullYear(d.getFullYear() - dy);
+  if (d.getMonth() !== mo) d.setDate(0);
+  return d.getTime();
+}
+const DM = () => H.daily || new Map();
+
+// Vorjahre fuer den Vergleich (nur Jahre mit Daten, vor dem Bezugsjahr), neueste zuerst
+function yearsBefore(ref) { return H.years.filter((y) => y < ref).sort((a, b) => b - a); }
+function cmpYearsFor(ref) {
+  if (H.cmp === 'off') return [];
+  const ys = yearsBefore(ref);
+  if (H.cmp === 'prev') return ys.includes(ref - 1) ? [ref - 1] : [];
+  return ys;
+}
+function cmpOptions(ref) {
+  const ys = yearsBefore(ref); const o = ['off'];
+  if (ys.includes(ref - 1)) o.push('prev');
+  if (ys.length >= 2) o.push('all');
+  return o;
+}
+
+// Produktionsfenster eines Tages (erster Ertrag -15 min .. letzter Ertrag +15 min), null ohne Ertragszeiten
+function prodWindow(m, row) {
+  const f = Date.parse(row?.first_production_ts || '');
+  if (!Number.isFinite(f)) return null;
+  const l = Date.parse(row.last_production_ts || '');
+  const now = Date.now();
+  let last = Number.isFinite(l) ? l : f;
+  if (m === midnight(now) && (!Number.isFinite(l) || now - l < PAD)) last = Math.max(last, now);   // heute noch in Produktion
+  return { x0: f, x1: Math.max(last, f) };
+}
+// Achse fuer genau einen Tag: Produktionszeit (aller verglichenen Jahre vereinigt) +/- 15 min, sonst 00-24 Uhr
+function dayWindow(m) {
+  const end = nextMidnight(m);
+  const wins = [];
+  const own = prodWindow(m, DM().get(ymd(m)));
+  if (own) wins.push(own);
+  const ref = new Date(m).getFullYear();
+  for (const y of cmpYearsFor(ref)) {
+    const row = DM().get(ymd(shiftYear(m, ref - y)));
+    const f = Date.parse(row?.first_production_ts || ''); const l = Date.parse(row?.last_production_ts || '');
+    if (!Number.isFinite(f) || !Number.isFinite(l)) continue;
+    const mm = midnight(f);   // Tageszeit auf den angezeigten Tag abbilden
+    wins.push({ x0: m + (f - mm), x1: m + (l - midnight(l)) });
+  }
+  if (!wins.length) return { x0: m, x1: end };
+  return { x0: Math.max(m, Math.min(...wins.map((w) => w.x0)) - PAD), x1: Math.min(end, Math.max(...wins.map((w) => w.x1)) + PAD) };
+}
 function customRange() {
   const now = Date.now();
   let from = parseYmd(H.range?.from); let to = parseYmd(H.range?.to);
   if (from == null) from = midnight(now - 30 * DAY);
   if (to == null) to = midnight(now);
   if (to < from) [from, to] = [to, from];
-  const e = new Date(to); e.setDate(e.getDate() + 1);   // bis-Tag inklusive
-  return { from, to: Math.min(e.getTime(), now), x0: from, x1: Math.max(e.getTime(), from + DAY) };
+  const e = nextMidnight(to);   // bis-Tag inklusive
+  if (from === to) { const w = dayWindow(from); return { from: w.x0, to: Math.min(w.x1, now), x0: w.x0, x1: w.x1 }; }
+  return { from, to: Math.min(e, now), x0: from, x1: Math.max(e, from + DAY) };
 }
 function range() {
   const now = Date.now();
   if (H.preset === 'today') {
-    const m = midnight(now); const e = new Date(m); e.setDate(e.getDate() + 1);
-    return { from: m, to: now, x0: m, x1: e.getTime() };
+    const m = midnight(now); const w = dayWindow(m);
+    return { from: w.x0, to: Math.min(w.x1, now), x0: w.x0, x1: w.x1 };
   }
   if (H.preset === 'range') return customRange();
   if (H.preset === 'all') {
@@ -58,8 +119,23 @@ function range() {
   const n = H.preset === '24h' ? 1 : H.preset === 'y1' ? 365 : Number(H.preset.slice(1)) || 1;
   return { from: now - n * DAY, to: now, x0: now - n * DAY, x1: now };
 }
-// Live-Nachladen nur bei kurzen Zeitraeumen, die bis "jetzt" reichen
-const isLiveRange = () => H.preset !== 'range' && (range().x1 - range().x0 <= LIVE_MAX_DAYS * DAY + 1);
+// "Live" und Nachladen pro Poll nur bei kurzen Zeitraeumen, die bis "jetzt" reichen (Heute, 24 h, bis 7 Tage)
+const isLiveRange = () => H.mode === 'line' && (H.preset === 'today' || H.preset === '24h'
+  || (/^d\d+$/.test(H.preset) && Number(H.preset.slice(1)) <= LIVE_MAX_DAYS));
+const refYearOf = (r) => new Date(r.x1 - 1).getFullYear();
+// Vergleich als Linie nur fuer Zeitraeume bis 7 Tage (ausser Preset 'all'/'y1')
+const lineCmpOk = (r) => H.mode === 'line' && H.preset !== 'all' && H.preset !== 'y1' && r.x1 - r.x0 <= LIVE_MAX_DAYS * DAY + 3600e3;
+
+async function loadDaily(force) {
+  if (!force && H.daily !== undefined && Date.now() - H.dailyAt < 60e3) return;
+  const res = await api('GET', `/api/daily?from=${ymd(Date.now() - 3650 * DAY)}&to=${ymd(Date.now() + DAY)}`);
+  H.dailyAt = Date.now();
+  if (res.ok && Array.isArray(res.data?.days)) {
+    H.daily = new Map(res.data.days.map((d) => [d.date, d]));
+    H.years = [...new Set(res.data.days.filter((d) => d.yield_kwh != null).map((d) => Number(d.date.slice(0, 4))))].sort();
+  } else if (res.status === 404 || res.status === 501) { H.daily = null; H.years = []; }
+  else if (H.daily === undefined) { H.daily = null; H.years = []; }
+}
 
 // ---------- Laden ----------
 async function fetchHistory() {
@@ -77,9 +153,53 @@ async function fetchHistory() {
   if (res.status === 400) res = await api('GET', q(false));
   return { res, r };
 }
+// Feld, das mit den Vorjahren verglichen wird: das erste Leistungsfeld, sonst das erste Feld
+function cmpField() {
+  const f = H.fields.filter((n) => H.available.some((a) => a.name === n));
+  return f.find((n) => unitOf(n) === 'W') || f[0] || null;
+}
+// Summe yield_kwh der Kalendertage im Bereich (dy Jahre zurueck); null ohne Daten
+function periodSum(x0, x1, dy) {
+  const D = H.daily; if (!D) return null;
+  let s = 0; let n = 0;
+  for (let m = midnight(x0); m < x1; m = nextMidnight(m)) {
+    const row = D.get(ymd(dy ? shiftYear(m, dy) : m));
+    if (row && row.yield_kwh != null) { s += row.yield_kwh; n++; }
+  }
+  return n ? s : null;
+}
+// Vorjahreslinien: dasselbe Feld im gleichen Kalenderzeitraum, zeitlich ins aktuelle Jahr verschoben
+async function fetchCmp(r, d) {
+  const ref = refYearOf(r); const f = cmpField();
+  const years = lineCmpOk(r) && f ? cmpYearsFor(ref) : [];
+  if (!years.length) return [];
+  const STEP = 15 * 60e3;
+  const a0 = Math.floor(r.x0 / STEP) * STEP; const a1 = Math.ceil(r.x1 / STEP) * STEP;   // stabiler Schluessel (kein Neuladen je Poll)
+  const pts = Math.max(2, Math.min(2000, Math.round((a1 - a0) / 1000 / Math.max(d.step_s || 60, 1))));
+  const out = await Promise.all(years.map(async (y) => {
+    const dy = ref - y; const from = shiftYear(a0, dy); const to = shiftYear(a1, dy);
+    const key = [f, from, to, pts].join('|');
+    let res = H.cmpCache.get(key);
+    if (!res) {
+      const r2 = await api('GET', `/api/history?from=${encodeURIComponent(new Date(from).toISOString())}&to=${encodeURIComponent(new Date(to).toISOString())}`
+        + `&fields=${encodeURIComponent(f)}&points=${pts}`);
+      res = r2.ok && r2.data?.series?.[f] ? r2.data : null;
+      if (res) { if (H.cmpCache.size > 40) H.cmpCache.clear(); H.cmpCache.set(key, res); }
+    }
+    if (!res) return null;
+    const s = res.series[f]; const off = a0 - from;
+    const t2 = res.t.map((x) => x + off);
+    if (!(s.avg || []).some((v) => v != null)) return null;
+    return { year: y, field: f, t: t2, avg: s.avg, min: s.min, max: s.max, vt: t2.filter((_, i) => s.avg[i] != null), sum: periodSum(r.x0, r.x1, dy) };
+  }));
+  return out.filter(Boolean);
+}
 async function reload() {
   if (!H.active) return;
   const seq = ++H.seq;
+  await loadDaily(false);
+  if (seq !== H.seq) return;
+  if (H.mode === 'yields') { H.err = H.daily === null ? 'unsupported' : null; build(); return; }
   const { res, r } = await fetchHistory();
   if (seq !== H.seq) return;
   if (res.status === 404 || res.status === 501) H.err = 'unsupported';
@@ -88,6 +208,8 @@ async function reload() {
     H.err = null; H.data = res.data; H.r = r;
     if (Array.isArray(res.data.available) && res.data.available.length) H.available = res.data.available;
     sanitizeFields();
+    try { H.cmpData = await fetchCmp(r, res.data); } catch { H.cmpData = []; }
+    if (seq !== H.seq) return;
   }
   build();
 }
@@ -101,13 +223,6 @@ function sanitizeFields() {
 }
 
 // ---------- Skala & Ticks ----------
-function nice(lo, hi, n = 4) {
-  let top = hi;
-  if (!(top > lo)) top = lo + 1;
-  const raw = (top - lo) / n; const mag = 10 ** Math.floor(Math.log10(raw)); const f = raw / mag;
-  const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
-  return { min: Math.floor(lo / step + 1e-9) * step, max: Math.ceil(top / step - 1e-9) * step, step };
-}
 const TSTEPS = [60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, 3600e3, 7200e3, 10800e3, 21600e3, 43200e3, DAY, 2 * DAY, 7 * DAY];
 const MSTEPS = [1, 2, 3, 6, 12, 24];   // Monate
 function timeTicks(x0, x1, pw, minGap) {
@@ -150,10 +265,16 @@ function fmtVal(v, unit) {
 function unitOf(name) { return H.available.find((a) => a.name === name)?.unit || ''; }
 
 // ---------- Aufbau ----------
+function updateLive() {
+  const st = H.getStatus();
+  $('hist-live').hidden = !(H.active && isLiveRange() && !H.err && st?.inverter?.state === 'online' && H.data);
+}
 function build() {
   buildControls();
+  updateLive();
   const svg = $('hist-svg'); const note = $('hist-note');
-  $('hist-live').hidden = !H.active || H.err != null;
+  if (H.mode === 'yields') { buildYields(svg, note); return; }
+  $('hist-nav').hidden = true;
   const d = H.data;
   const series = d ? H.fields.filter((f) => d.series?.[f]) : [];
   const hasData = d && series.some((f) => (d.series[f].avg || []).some((v) => v != null));
@@ -171,10 +292,53 @@ function build() {
   buildRes(d);
 }
 
+function buildYields(svg, note) {
+  const per = yl.periodOf(H.ypd, H.yoff);
+  $('hist-nav').hidden = false;
+  $('yld-label').textContent = yl.periodLabel(per);
+  const old = H.daily ? yl.oldestDate(H.daily) : null;
+  $('yld-next').disabled = H.yoff >= 0;
+  $('yld-prev').disabled = !old || yl.ymd(per.start) <= old;
+  $('yld-csv').disabled = !H.daily;
+  $('hist-res').hidden = true;
+  if (H.daily === null || H.daily === undefined) {
+    svg.replaceChildren(); $('hist-legend').replaceChildren(); $('hist-tip').hidden = true;
+    note.hidden = false; note.textContent = H.daily === null ? t('hist.unsupported') : t('hist.loading');
+    svg.setAttribute('height', 220); svg.setAttribute('viewBox', '0 0 10 220');
+    return;
+  }
+  const out = yl.render({ svg, box: $('hist-box'), tip: $('hist-tip'), legend: $('hist-legend'), daily: H.daily, period: per, years: cmpYearsFor(per.ref) });
+  H.width = Math.round($('hist-box').clientWidth);
+  note.hidden = out.hasData;
+  if (!out.hasData) {
+    note.textContent = t('hist.empty');
+    svg.setAttribute('height', 220); svg.setAttribute('viewBox', '0 0 10 220');
+  }
+}
+
 function buildRes(d) {
   const el = $('hist-res'); const r = d?.resolution_s;
   const key = r === 300 ? 'hist.res_5m' : r === 'mixed' ? 'hist.res_mixed' : null;
   el.hidden = !key; el.textContent = key ? t(key) : '';
+}
+
+// Index des Eintrags in der sortierten Zeitliste arr, der tt am naechsten liegt
+function nearestIdx(arr, tt) {
+  let lo = 0; let hi = arr.length - 1;
+  if (hi < 0) return -1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] < tt) lo = mid + 1; else hi = mid; }
+  if (lo > 0 && Math.abs(arr[lo - 1] - tt) < Math.abs(arr[lo] - tt)) lo--;
+  return lo;
+}
+// Teilstuecke zusammenhaengender Werte (Luecken > gapMs werden nicht ueberbrueckt)
+function segments(tArr, avg, gapMs) {
+  const segs = []; let cur = null; let lastT = null;
+  tArr.forEach((tt, i) => {
+    if (avg?.[i] == null) return;
+    if (!cur || tt - lastT > gapMs) { cur = []; segs.push(cur); }
+    cur.push(i); lastT = tt;
+  });
+  return segs;
 }
 
 function draw(d, series) {
@@ -192,6 +356,7 @@ function draw(d, series) {
       if (unitOf(f) !== u) continue;
       for (const k of ['min', 'avg', 'max']) for (const v of d.series[f][k] || []) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
     }
+    for (const c of H.cmpData) if (unitOf(c.field) === u) for (const v of c.avg) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
     if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
     if (u === 'W' && lo > 0) lo = 0;   // Leistungsachse beginnt bei 0
     if (lo >= 0 && lo < 0.5 * hi) lo = 0; else { const p = (hi - lo || 1) * 0.06; lo -= p; hi += p; }
@@ -235,18 +400,28 @@ function draw(d, series) {
   const now = Date.now();
   if (H.preset === 'today' && now < x1) kids.push(sv('line', { class: 'now', x1: X(now), x2: X(now), y1: m.t, y2: m.t + ph }));
 
-  // Serien: Linie = avg, Flaeche = min..max; Luecken nicht ueberbruecken
   const gapMs = Math.max(GAP_MS, 3 * (H.getStatus()?.poll?.live_interval_s || 10) * 1000, 2.5 * (d.step_s || 0) * 1000);
+  // Vorjahreslinien zuerst (hinter der aktuellen Linie): gestrichelt, gedaempft
+  H.cpts = [];
+  H.cmpData.forEach((c, ci) => {
+    const a = axisOf(c.field); const cls = 'yc-' + (ci % 4);
+    let line = ''; const dots = [];
+    for (const sg of segments(c.t, c.avg, gapMs)) {
+      if (sg.length === 1) { dots.push(sg[0]); continue; }
+      line += 'M' + sg.map((i) => `${X(c.t[i]).toFixed(1)} ${Y(c.avg[i], a).toFixed(1)}`).join('L');
+    }
+    const g = sv('g', { class: 'cmp ' + cls });
+    if (line) g.append(sv('path', { class: 'cl', d: line }));
+    for (const i of dots) g.append(sv('circle', { class: 'dot', cx: X(c.t[i]), cy: Y(c.avg[i], a), r: 2 }));
+    kids.push(g);
+    H.cpts.push({ c, a, cls });
+  });
+  // Serien: Linie = avg, Flaeche = min..max; Luecken nicht ueberbruecken
   H.pts = [];
   for (const f of series) {
     const s = d.series[f]; const a = axisOf(f);
     const cls = 'hs-' + (H.fields.indexOf(f) % 6);
-    const segs = []; let cur = null; let lastT = null;
-    d.t.forEach((tt, i) => {
-      if (s.avg?.[i] == null) return;
-      if (!cur || tt - lastT > gapMs) { cur = []; segs.push(cur); }
-      cur.push(i); lastT = tt;
-    });
+    const segs = segments(d.t, s.avg, gapMs);
     let line = '', band = ''; const dots = [];
     const P = (i, arr) => `${X(d.t[i]).toFixed(1)} ${Y(arr?.[i] ?? s.avg[i], a).toFixed(1)}`;
     for (const sg of segs) {
@@ -265,47 +440,58 @@ function draw(d, series) {
   // Fadenkreuz + Tooltip (Maus und Touch)
   const hov = sv('g', { id: 'hist-hov', visibility: 'hidden' },
     sv('line', { class: 'cross', y1: m.t, y2: m.t + ph }),
-    ...H.pts.map((p) => sv('circle', { class: 'hd ' + p.cls, r: 4.5 })));
+    ...H.pts.map((p) => sv('circle', { class: 'hd ' + p.cls, r: 4.5 })),
+    ...H.cpts.map((p) => sv('circle', { class: 'hd cmp ' + p.cls, r: 4 })));
   const ov = sv('rect', { class: 'ov', x: m.l, y: m.t, width: pw, height: ph });
   svg.replaceChildren(...kids, hov, ov);
   H.geo = { m, pw, ph, W, Ht, x0, x1, X, Y };
-  H.valid = d.t.map((_, i) => (H.pts.some((p) => p.s.avg?.[i] != null) ? i : -1)).filter((i) => i >= 0);
+  H.vt = d.t.filter((_, i) => H.pts.some((p) => p.s.avg?.[i] != null));
   const mv = (ev) => hover(ev, d);
   ov.addEventListener('pointermove', mv);
   ov.addEventListener('pointerdown', mv);
   ov.addEventListener('pointerleave', (ev) => { if (ev.pointerType === 'mouse') hideHover(); });
   if (H.hover != null) showAt(H.hover, d);
-  buildLegend(d, series);
+  buildLegend(d, series, r);
 }
 
 function hover(ev, d) {
   const rect = $('hist-svg').getBoundingClientRect();
   const px = ((ev.clientX - rect.left) / rect.width) * H.geo.W;
   const tt = H.geo.x0 + ((px - H.geo.m.l) / H.geo.pw) * (H.geo.x1 - H.geo.x0);
-  const v = H.valid; if (!v.length) return;
-  let lo = 0, hi = v.length - 1;
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (d.t[v[mid]] < tt) lo = mid + 1; else hi = mid; }
-  if (lo > 0 && Math.abs(d.t[v[lo - 1]] - tt) < Math.abs(d.t[v[lo]] - tt)) lo--;
-  H.hover = d.t[v[lo]];
+  let best = null;
+  for (const arr of [H.vt, ...H.cmpData.map((c) => c.vt)]) {
+    const i = nearestIdx(arr, tt); if (i < 0) continue;
+    const dist = Math.abs(arr[i] - tt);
+    if (!best || dist < best.dist) best = { t: arr[i], dist };
+  }
+  if (!best) return;
+  H.hover = best.t;
   showAt(H.hover, d);
 }
 function showAt(tms, d) {
-  const idx = d.t.indexOf(tms);
   const hov = $('hist-hov');
-  if (idx < 0 || !hov) { hideHover(); return; }
+  if (!hov || !H.geo) { hideHover(); return; }
   const { X, Y, W } = H.geo; const x = X(tms);
+  const tol = Math.max((d.step_s || 0) * 600, 1);
+  const at = (tArr, arr) => { const i = nearestIdx(tArr, tms); return i >= 0 && Math.abs(tArr[i] - tms) <= tol ? { i, v: arr?.[i] } : null; };
   hov.setAttribute('visibility', 'visible');
   const cross = hov.querySelector('.cross'); cross.setAttribute('x1', x); cross.setAttribute('x2', x);
   const circles = hov.querySelectorAll('circle');
   const rows = [h('strong', {}, tipFmt(d.step_s || 0).format(tms))];
-  H.pts.forEach((p, i) => {
-    const av = p.s.avg?.[idx]; const c = circles[i];
+  H.pts.forEach((p, k) => {
+    const hit = at(d.t, p.s.avg); const av = hit?.v ?? null; const c = circles[k];
     if (av == null) c.setAttribute('visibility', 'hidden');
     else { c.setAttribute('visibility', 'visible'); c.setAttribute('cx', x); c.setAttribute('cy', Y(av, p.a)); }
-    const u = unitOf(p.f); const mn = p.s.min?.[idx]; const mx = p.s.max?.[idx];
+    const u = unitOf(p.f); const mn = hit ? p.s.min?.[hit.i] : null; const mx = hit ? p.s.max?.[hit.i] : null;
     const spread = av != null && mn != null && mx != null && Math.abs(mx - mn) > 1e-9 * (Math.abs(av) + 1) && (d.step_s || 0) > 15;
     rows.push(h('div', { class: 'row ' + p.cls }, h('i'), h('span', {}, fieldName(p.f)), h('b', {}, fmtVal(av, u)),
       spread ? h('small', {}, `${fmtVal(mn, '')}–${fmtVal(mx, '')}`) : null));
+  });
+  H.cpts.forEach((p, k) => {
+    const hit = at(p.c.t, p.c.avg); const av = hit?.v ?? null; const c = circles[H.pts.length + k];
+    if (av == null) c.setAttribute('visibility', 'hidden');
+    else { c.setAttribute('visibility', 'visible'); c.setAttribute('cx', x); c.setAttribute('cy', Y(av, p.a)); }
+    rows.push(h('div', { class: 'row cmp ' + p.cls }, h('i'), h('span', {}, String(p.c.year)), h('b', {}, fmtVal(av, unitOf(p.c.field)))));
   });
   const tip = $('hist-tip');
   tip.replaceChildren(...rows); tip.hidden = false;
@@ -319,22 +505,47 @@ function hideHover() {
   $('hist-tip').hidden = true;
 }
 
-function buildLegend(d, series) {
-  $('hist-legend').replaceChildren(...series.map((f) => {
+const fmtSum = (v) => (v == null ? '–' : num(v, Math.abs(v) >= 1000 ? 0 : 1) + ' kWh');
+function buildLegend(d, series, r) {
+  const items = series.map((f) => {
     const arr = d.series[f].avg || []; let last = null;
     for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) { last = arr[i]; break; }
     return h('li', { class: 'hs-' + (H.fields.indexOf(f) % 6) }, h('i'), h('span', {}, fieldName(f)), h('b', {}, fmtVal(last, unitOf(f))));
-  }));
+  });
+  if (H.cpts.length) {   // Jahre mit kWh-Summe: aktuelles Jahr (durchgezogen) und Vorjahre (gestrichelt)
+    const cf = H.cpts[0].c.field; const multi = H.fields.length > 1;
+    const sub = multi ? h('small', {}, fieldName(cf)) : null;
+    items.push(h('li', { class: 'yr hs-' + (H.fields.indexOf(cf) % 6), title: fieldName(cf) }, h('i'), h('span', {}, String(refYearOf(r))), h('b', {}, fmtSum(periodSum(r.x0, r.x1, 0))), sub));
+    H.cpts.forEach((p) => items.push(h('li', { class: 'yr cmp ' + p.cls, title: fieldName(cf) }, h('i'), h('span', {}, String(p.c.year)), h('b', {}, fmtSum(p.c.sum)))));
+  }
+  $('hist-legend').replaceChildren(...items);
 }
 
 // ---------- Bedienelemente ----------
+function csvUrl() {
+  const r = range();
+  return `/api/export/samples.csv?from=${encodeURIComponent(new Date(r.from).toISOString())}&to=${encodeURIComponent(new Date(r.to).toISOString())}`
+    + `&fields=${encodeURIComponent(H.fields.join(','))}&sep=${csvSep()}`;
+}
 function buildControls() {
   const list = presets();
   if (!list.includes(H.preset)) H.preset = 'today';
-  const sig = [lang, list.join(), H.preset, H.fields.join(), H.available.map((a) => a.name).join(), H.getStatus()?.history?.oldest].join('|');
+  const ref = H.mode === 'yields' ? yl.periodOf(H.ypd, H.yoff).ref : refYearOf(range());
+  const opts = cmpOptions(ref);
+  const sig = [lang, H.mode, H.ypd, list.join(), H.preset, H.fields.join(), H.available.map((a) => a.name).join(), H.getStatus()?.history?.oldest, opts.join(), H.cmp].join('|');
+  const yieldsMode = H.mode === 'yields';
+  $('hist-presets').hidden = yieldsMode; $('yld-periods').hidden = !yieldsMode;
+  $('hist-fields').hidden = yieldsMode; $('hist-csv').hidden = yieldsMode;
+  $('hist-cmp-wrap').hidden = opts.length < 2 || (!yieldsMode && !lineCmpOk(range()));
+  $('hist-band').textContent = t(yieldsMode ? 'hist.yld_note' : 'hist.band');
+  if (!yieldsMode) { const r = range(); $('hist-csv').disabled = r.to - r.from > CSV_MAX_DAYS * DAY; $('hist-csv').title = $('hist-csv').disabled ? t('hist.csv_range', { n: CSV_MAX_DAYS }) : ''; }
   if (sig === H.builtSig) return;
   H.builtSig = sig;
+  $('hist-mode').replaceChildren(...['line', 'yields'].map((m) => h('button', { type: 'button', 'aria-pressed': m === H.mode ? 'true' : 'false', onclick: () => setMode(m) }, t(MODE_KEY[m]))));
   $('hist-presets').replaceChildren(...list.map((p) => h('button', { type: 'button', 'aria-pressed': p === H.preset ? 'true' : 'false', onclick: () => setPreset(p) }, presetLabel(p))));
+  $('yld-periods').replaceChildren(...yl.KINDS.map((k) => h('button', { type: 'button', 'aria-pressed': k === H.ypd ? 'true' : 'false', onclick: () => setKind(k) }, t(KIND_KEY[k]))));
+  const eff = opts.includes(H.cmp) ? H.cmp : (H.cmp === 'all' && opts.includes('prev') ? 'prev' : 'off');
+  $('hist-cmp').replaceChildren(...opts.map((o) => h('option', { value: o, selected: o === eff }, t(CMP_KEY[o]))));
   $('hist-fcount').textContent = `(${H.fields.length})`;
   buildRange();
   const groups = new Map();
@@ -349,12 +560,14 @@ function buildControls() {
   $('hist-fbody').replaceChildren(...body);
 }
 function buildRange() {
-  const box = $('hist-range'); box.hidden = H.preset !== 'range';
+  const box = $('hist-range'); box.hidden = H.preset !== 'range' || H.mode !== 'line';
   if (box.hidden) return;
-  const r = customRange(); const o = Date.parse(H.getStatus()?.history?.oldest || '');
+  const e = parseYmd(H.range?.to); const f0 = parseYmd(H.range?.from);
+  const o = Date.parse(H.getStatus()?.history?.oldest || '');
   const f = $('hist-from'); const to = $('hist-to');
-  f.value = ymd(r.x0); to.value = ymd(r.x1 - DAY);
-  f.max = to.max = ymd(Date.now());
+  const now = Date.now();
+  f.value = ymd(f0 ?? midnight(now - 30 * DAY)); to.value = ymd(e ?? midnight(now));
+  f.max = to.max = ymd(now);
   if (Number.isFinite(o)) f.min = to.min = ymd(o);
 }
 function applyRange() {
@@ -364,8 +577,24 @@ function applyRange() {
   buildRange(); reload();
 }
 function setPreset(p) {
-  H.preset = p; localStorage.setItem('h2m-hist-preset', p); H.hover = null;
+  H.preset = p; localStorage.setItem('h2m-hist-preset', p); H.hover = null; H.cmpData = [];
   buildControls(); reload();
+}
+function setMode(m) {
+  H.mode = m; localStorage.setItem('h2m-hist-mode', m); H.hover = null; H.cmpData = []; H.builtSig = '';
+  build(); reload();
+}
+function setKind(k) {
+  H.ypd = k; localStorage.setItem('h2m-yld-kind', k); H.yoff = 0; H.hover = null; yl.hide($('hist-tip'), $('hist-svg')); H.builtSig = '';
+  build();
+}
+function setCmp(v) {
+  H.cmp = v; localStorage.setItem('h2m-hist-cmp', v); H.hover = null; H.cmpData = []; H.builtSig = '';
+  yl.hide($('hist-tip'), $('hist-svg'));
+  if (H.mode === 'yields') build(); else { build(); reload(); }
+}
+function stepPeriod(dir) {
+  H.yoff = Math.min(0, H.yoff + dir); yl.hide($('hist-tip'), $('hist-svg')); build();
 }
 function toggle(name, box) {
   let f = H.fields.slice();
@@ -390,14 +619,23 @@ export function init(getStatus) {
   H.getStatus = getStatus;
   $('hist-from').addEventListener('change', applyRange);
   $('hist-to').addEventListener('change', applyRange);
+  $('hist-cmp').addEventListener('change', (e) => setCmp(e.target.value));
+  $('hist-csv').addEventListener('click', () => download(csvUrl()));
+  $('yld-prev').addEventListener('click', () => stepPeriod(-1));
+  $('yld-next').addEventListener('click', () => stepPeriod(1));
+  $('yld-csv').addEventListener('click', () => {
+    const p = yl.periodOf(H.ypd, H.yoff);
+    download(`/api/export/daily.csv?from=${yl.ymd(p.start)}&to=${yl.ymd(p.end)}&sep=${csvSep()}`);
+  });
   new ResizeObserver(() => {
-    if (!H.active || !H.data) return;
+    if (!H.active) return;
+    if (H.mode === 'line' && !H.data) return;
     const w = Math.round($('hist-box').clientWidth);
     if (w && w !== H.width) { cancelAnimationFrame(H.fb); H.fb = requestAnimationFrame(() => build()); }
   }).observe($('hist-box'));
 }
 export function activate() {
-  H.active = true; H.builtSig = '';
+  H.active = true; H.builtSig = ''; H.yoff = 0;
   build();
   reload();
   clearInterval(H.timer);
@@ -410,5 +648,6 @@ export function onStatus(st) {
   const ll = st?.poll?.last_live_at;
   if (ll && ll !== H.lastLive) { const first = H.lastLive == null; H.lastLive = ll; if (!first && isLiveRange()) reload(); }
   buildControls();
+  updateLive();
 }
 export function relang() { H.builtSig = ''; if (H.active) build(); }
