@@ -16,6 +16,9 @@ sieben Sprachen.
 - 📈 **Alle Daten**: PV-Strings, Netz (3 Phasen), Ertrag, Zustand in Klartext, Temperatur, Isolation, Alarme, Gerätedaten
 - 🎛️ **Steuerung**: Wirkleistung in % oder W begrenzen, Wechselrichter einschalten – und ausschalten, wenn du es ausdrücklich erlaubst
 - 📊 **Verlauf & Awards**: dauerhafte Historie – jeder 10-Sekunden-Wert 90 Tage lang (einstellbar), danach für immer als 5-Minuten-Mittelwert; Diagramm von heute bis Jahre zurück; bester Tag/Woche/Monat/Jahr, Spitzenleistung, Meilensteine, eingespartes CO₂ und Ertrag in Euro – alles lokal in SQLite gespeichert und auch per MQTT abfragbar
+- 📅 **Vergleich mit Vorjahren**: heutige Kurve neben demselben Tag der Vorjahre, Säulen je Woche/Monat/Jahr; Tagesbilanz per MQTT für Benachrichtigungen im Smarthome
+- 🩺 **Frühwarnung & Sicherung**: Hinweis, wenn der Isolationswiderstand sinkt oder ein PV-String nachlässt; nächtliche Datenbank-Sicherung; CSV-Export
+- 📱 **Als App installierbar** auf dem Handy (PWA)
 - 🛡️ **Robust**: übersteht Ausfälle von Wechselrichter, Dongle oder Broker, verbindet sich selbst neu und überlastet den Dongle nie
 - 🪶 **Schlank**: ein kleiner Python-Prozess, rund 4 Laufzeit-Bibliotheken, ca. 30 MB RAM, ohne Root-Rechte
 - 🍓 **Läuft auf dem Raspberry Pi**: Images für amd64 und arm64 (Raspberry Pi 3/4/5 mit 64-Bit-System)
@@ -56,6 +59,10 @@ sieben Sprachen.
 | Verlauf | Awards | Awards (Handy, dunkel) |
 |---|---|---|
 | ![Verlauf](docs/images/history-year-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards Handy](docs/images/awards-mobile-dark.png) |
+
+| Heute vs. Vorjahre | Erträge je Monat | Erträge (Handy) |
+|---|---|---|
+| ![Vergleich](docs/images/history-compare-light.png) | ![Erträge](docs/images/yields-light.png) | ![Erträge Handy](docs/images/mobile-yields-light.png) |
 
 ## Voraussetzungen
 
@@ -129,9 +136,12 @@ Schlüssel mit Kommentar). Pflicht sind nur `HUAWEI_HOST` und `MQTT_HOST`.
 | `CO2_FACTOR` | `0.38` | Eingespartes CO₂ in kg pro kWh (Standard ≈ deutscher Strommix) |
 | `MILESTONE_STEP_KWH` | `1000` | Abstand der Meilensteine beim Gesamtertrag |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `BACKUP_KEEP` | `7` | Wie viele nächtliche Datenbank-Sicherungen in `/data/backup/` bleiben (0 = aus, max. 90) |
+| `WARN_INSULATION_RATIO` | `0.5` | Warnen, wenn der Isolationswiderstand unter diesen Anteil seines üblichen Werts fällt (0,1–0,9) |
+| `WARN_STRING_DEVIATION` | `0.10` | Warnen, wenn der Energieanteil von String 1 um mehr als diesen Wert vom Üblichen abweicht (0,02–0,5, also 10 Prozentpunkte) |
 | `TZ` | `Europe/Berlin` | Zeitzone |
 
-Intervalle, Log-Stufe, Retain, Einzel-Topics, Verlaufstage, Vergütung, Währung, CO₂-Faktor und Meilenstein-Abstand lassen sich nach dem Login auch im
+Intervalle, Log-Stufe, Retain, Einzel-Topics, Verlaufstage, Vergütung, Währung, CO₂-Faktor, Meilenstein-Abstand und Zahl der Sicherungen lassen sich nach dem Login auch im
 Portal ändern; diese Änderungen liegen im Volume `/data` und haben Vorrang vor der
 `.env`. Verbindungsdaten und Kennwörter ändert man nur in der `.env` – das Portal
 zeigt Kennwörter nur als „gesetzt / nicht gesetzt“.
@@ -157,6 +167,8 @@ nicht als Einzel-Topic gesendet. Alle Werte sind standardmäßig „retained“.
 | `…/device` | statisch | `model`, `serial_number`, `part_number`, `software_version`, `firmware_version`, `model_id`, `pv_strings`, `mppt_count`, `rated_power_w`, `max_power_w` |
 | `…/control` | statisch + nach jedem Befehl | `power_limit_pct`, `power_limit_w`, `shutdown_allowed` |
 | `…/awards` | beim Start, nach Mitternacht, bei Änderung (höchstens je statisches Intervall) | Ranglisten (Top 3), Meilensteine, CO₂, Geld – gleiches JSON wie `GET /api/awards` |
+| `…/daily/summary` | einmal täglich nach Produktionsende | Tagesbilanz: `yield_kwh`, `peak_power_w`, `peak_ts`, erste/letzte Produktion, `rank_all_time`, `rank_month`, `yesterday_kwh`, `last_year_same_day_kwh`, `avg_month_kwh`, `money`, `co2_kg` – praktisch für Benachrichtigungen |
+| `…/warnings` | tägliche Prüfung, bei Änderung | `{"checked", "active":[{"id":"insulation_low"\|"string_imbalance","since","value","baseline","unit"}]}` – leere Liste = alles gut. Braucht ≥ 7 Tage eigene Daten der Bridge |
 | `…/control/result` | nach jedem Befehl | `{"command","value","status":"ok\|rejected\|error","reason","ts"}` (nicht retained) |
 
 **Bedeutung des Status:** `inverter = stale` heißt, die letzte Abfrage ist
@@ -213,8 +225,8 @@ mosquitto_pub -h <broker> -u <benutzer> -P <kennwort> -t 'huawei/HV2260000000/co
 
 ## Web-Portal
 
-- **Übersicht** – aktuelle Leistung, Ertrag, heutige Spitze mit Uhrzeit, Zustand in Klartext, Strings, Netz, Firmware, Verbindungsstatus von Wechselrichter, Dongle und Broker, Schreibzugriff und ein Countdown bis zur nächsten Aktualisierung. Kurze Aussetzer und Ausfälle werden deutlich angezeigt.
-- **Verlauf** – Liniendiagramm beliebiger Werte: heute, 24 h, Tage, 1 Jahr, alles oder frei von–bis; Mittelwert-Linie mit Min/Max-Band, kurze Zeiträume laufen live mit.
+- **Übersicht** – aktuelle Leistung, Ertrag mit Einordnung (Ø Tag dieses Monats, gestern, gleicher Tag im Vorjahr), heutige Spitze mit Uhrzeit, Frühwarn-Hinweise, Zustand in Klartext, Strings, Netz, Firmware, Verbindungsstatus von Wechselrichter, Dongle und Broker, Schreibzugriff und ein Countdown bis zur nächsten Aktualisierung. Kurze Aussetzer und Ausfälle werden deutlich angezeigt.
+- **Verlauf** – Liniendiagramm beliebiger Werte: heute (auf die Stunden mit Ertrag gezoomt), 24 h, Tage, 1 Jahr, alles oder frei von–bis; Mittelwert-Linie mit Min/Max-Band, kurze Zeiträume laufen live mit; zuschaltbarer Vergleich mit demselben Zeitraum der Vorjahre (gestrichelt). **Erträge** zeigt Säulen je Woche, Monat oder Jahr mit den Vorjahren daneben. Beides als CSV exportierbar (Excel-tauglich).
 - **Awards** – Top 3 der Tage, Wochen, Monate, Jahre, Spitzenleistung, längster Sonnentag, frühester Start; Meilensteine, eingespartes CO₂ und Ertrag in Geld. Ohne Smart Meter gilt *Gesamtertrag × Einspeisevergütung* – selbst verbrauchter Strom ist eigentlich mehr wert.
 - **Alle Werte** – jedes Register mit Adresse, Rohwert, umgerechnetem Wert und Einheit; filterbar.
 - **Protokoll** – Live-Protokoll mit Filter nach Stufe.
@@ -269,7 +281,14 @@ Ziel im Proxy: `http://huawei2mqtt:8080`.
 | „x kurze Aussetzer in 24 h“ | Der Dongle hat eine Anfrage nicht rechtzeitig beantwortet; die Bridge hat wiederholt bzw. neu verbunden. Vereinzelt harmlos, gehäuft oft schwaches WLAN |
 | Leistungsbegrenzung springt von selbst zurück | FusionSolar-App/-Cloud oder Netzbetreiber-Steuerung überschreibt sie |
 
+| Hinweis „Isolationswiderstand niedriger als üblich“ | Feuchtigkeit oder ein beschädigtes Kabel/Steckverbinder auf der DC-Seite möglich – von einer Elektrofachkraft prüfen lassen, besonders wenn der Hinweis bleibt |
+| Hinweis „String X liefert weniger als üblich“ | Verschattung (neuer Baum, Schnee), Verschmutzung oder ein defektes Modul/Steckverbinder an diesem String |
+
 Verlauf, Tageswerte und Awards liegen in `/data/huawei2mqtt.db` (SQLite) – das Volume `/data` bei Updates behalten.
+Jede Nacht entsteht eine Sicherung `/data/backup/huawei2mqtt-JJJJ-MM-TT.db` (die letzten `BACKUP_KEEP` bleiben).
+**Wiederherstellen:** `docker compose stop`, Sicherung nach `data/huawei2mqtt.db` kopieren (`huawei2mqtt.db-wal`/`-shm` ggf. löschen), `docker compose up -d`.
+
+**Als App installieren:** Portal auf dem Handy per HTTPS öffnen → Browser-Menü → *Zum Startbildschirm hinzufügen* / *App installieren*.
 
 Mit `LOG_LEVEL=DEBUG` gibt es ausführliche Modbus-/MQTT-Protokolle (Kennwörter werden nie protokolliert).
 

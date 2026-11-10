@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-11-11
+
+First public release.
+
+### Added
+- History: comparison with the same period in previous years (dashed lines for ranges up to 7 days); new **Yields** view with bars per week, month and year, previous years side by side.
+- The single-day view zooms to the hours with production (first to last yield ±15 min).
+- Overview: today's yield in context (average day of this calendar month, yesterday, same day last year); early-warning hints.
+- MQTT `…/daily/summary` (retained): daily summary once production has ended, incl. ranks and comparisons.
+- Early warnings `…/warnings`: insulation resistance clearly below its usual value, energy share of the PV strings deviating (`WARN_INSULATION_RATIO`, `WARN_STRING_DEVIATION`).
+- Nightly database backup to `/data/backup/` with rotation (`BACKUP_KEEP`, default 7, also in the portal).
+- CSV export of history (raw values) and daily values (`/api/export/samples.csv`, `/api/export/daily.csv`), Excel-friendly for non-English languages.
+- `/api/daily/context`.
+- Portal installable as an app (web manifest, icons, service worker; the API is never cached).
+- GitHub issue templates.
+
+### Changed
+- "Live" badge only shows when the chart really refreshes live.
+
 ## [0.3.0-rc3] - 2026-11-09
 
 ### Added

@@ -15,6 +15,9 @@ connection status of every component and the log — in seven languages.
 - 📈 **All the data**: PV strings, grid (3 phases), yield, status in plain words, temperature, insulation, alarms, device info
 - 🎛️ **Control**: limit active power in % or W, switch the inverter on — and off, if you explicitly allow it
 - 📊 **History & awards**: a permanent history – every 10-second value for 90 days (configurable), then kept forever as 5-minute averages; live chart from today back to years; best day/week/month/year, peak power, milestones, CO₂ saved and yield in money — all stored locally in SQLite, also queryable via MQTT
+- 📅 **Compare with previous years**: today's curve next to the same day in earlier years, bar charts per week/month/year; daily summary via MQTT for your smart-home notifications
+- 🩺 **Early warnings & backup**: hints when the insulation resistance drops or one PV string falls behind; nightly database backup; CSV export
+- 📱 **Installable as an app** on your phone (PWA)
 - 🛡️ **Robust**: survives inverter, dongle or broker outages, reconnects by itself, never hammers the dongle
 - 🪶 **Lightweight**: one small Python process, ~4 runtime libraries, ~30 MB RAM, non-root
 - 🍓 **Runs on a Raspberry Pi**: images for amd64 and arm64 (Raspberry Pi 3/4/5 with 64-bit OS)
@@ -52,9 +55,13 @@ connection status of every component and the log — in seven languages.
 |---|---|---|
 | ![All values](docs/images/values.png) | ![Settings](docs/images/settings.png) | ![Log](docs/images/log.png) |
 
-| History | Awards | Awards (mobile, dark) |
+| History (year) | Awards | Awards (mobile, dark) |
 |---|---|---|
 | ![History](docs/images/history-year-light.png) | ![Awards](docs/images/awards-light.png) | ![Awards mobile](docs/images/awards-mobile-dark.png) |
+
+| Today vs. previous years | Yields per month | Yields (mobile) |
+|---|---|---|
+| ![Compare](docs/images/history-compare-light.png) | ![Yields](docs/images/yields-light.png) | ![Yields mobile](docs/images/mobile-yields-light.png) |
 
 ## Requirements
 
@@ -128,9 +135,12 @@ with comments). Only `HUAWEI_HOST` and `MQTT_HOST` are mandatory.
 | `CO2_FACTOR` | `0.38` | kg CO₂ saved per kWh (default ≈ German grid mix) |
 | `MILESTONE_STEP_KWH` | `1000` | Step between total-yield milestones |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `BACKUP_KEEP` | `7` | Nightly database backups to keep in `/data/backup/` (0 = off, max. 90) |
+| `WARN_INSULATION_RATIO` | `0.5` | Warn when the insulation resistance falls below this share of its usual value (0.1–0.9) |
+| `WARN_STRING_DEVIATION` | `0.10` | Warn when string 1's share of the energy deviates by more than this from usual (0.02–0.5, i.e. 10 percentage points) |
 | `TZ` | `Europe/Berlin` | Time zone |
 
-Intervals, log level, retain, per-value topics, history days, tariff, currency, CO₂ factor and milestone step can also be changed in the portal
+Intervals, log level, retain, per-value topics, history days, tariff, currency, CO₂ factor and milestone step and number of backups can also be changed in the portal
 (after login); those changes are stored in the `/data` volume and override `.env`.
 Connection settings and secrets can only be changed in `.env` — the portal shows
 secrets only as "set / not set".
@@ -156,6 +166,8 @@ not published as single topics. All values are retained by default.
 | `…/device` | static | `model`, `serial_number`, `part_number`, `software_version`, `firmware_version`, `model_id`, `pv_strings`, `mppt_count`, `rated_power_w`, `max_power_w` |
 | `…/control` | static + after every command | `power_limit_pct`, `power_limit_w`, `shutdown_allowed` |
 | `…/awards` | at start, after midnight, on change (max. every static interval) | rankings (top 3), milestones, CO₂, money — same JSON as `GET /api/awards` |
+| `…/daily/summary` | once a day after production ends | daily summary: `yield_kwh`, `peak_power_w`, `peak_ts`, first/last production, `rank_all_time`, `rank_month`, `yesterday_kwh`, `last_year_same_day_kwh`, `avg_month_kwh`, `money`, `co2_kg` — handy for notifications |
+| `…/warnings` | daily check, on change | `{"checked", "active":[{"id":"insulation_low"\|"string_imbalance","since","value","baseline","unit"}]}` — empty list = all good. Needs ≥ 7 days of the bridge's own data |
 | `…/control/result` | after every command | `{"command","value","status":"ok\|rejected\|error","reason","ts"}` (not retained) |
 
 **Status semantics:** `inverter = stale` means the last poll failed but values are
@@ -210,8 +222,8 @@ mosquitto_pub -h <broker> -u <user> -P <pass> -t 'huawei/HV2260000000/control/po
 
 ## Web portal
 
-- **Overview** – current power, yield, today's peak with time, status in plain words, strings, grid, firmware, connection status of inverter, dongle and broker, write access, and a countdown to the next update. Short drop-outs and outages are shown clearly.
-- **History** – live line chart of any values (today, 24 h, up to the configured number of days), average line plus min/max band.
+- **Overview** – current power, yield with context (average day of this month, yesterday, same day last year), today's peak with time, early-warning hints, status in plain words, strings, grid, firmware, connection status of inverter, dongle and broker, write access, and a countdown to the next update. Short drop-outs and outages are shown clearly.
+- **History** – line chart of any values: today (zoomed to the hours with production), 24 h, days, 1 year, everything or a free from–to range; average line plus min/max band; optional comparison with the same period in previous years (dashed lines). **Yields** shows bars per week, month or year with previous years side by side. Both can be exported as CSV (Excel-friendly).
 - **Awards** – top 3 days, weeks, months, years, peak power, longest sunny day, earliest start; milestones, CO₂ saved and yield in money. Without a smart meter the money value is *total yield × feed-in tariff* — self-consumed energy is actually worth more.
 - **All values** – every register with address, raw value, scaled value and unit; filterable.
 - **Log** – live log with level filter.
@@ -266,7 +278,14 @@ Proxy target: `http://huawei2mqtt:8080`.
 | "x short drop-outs in 24 h" | The dongle didn't answer a request in time; the bridge retried and reconnected. Occasional drop-outs are harmless; many may point to weak Wi-Fi |
 | Power limit changes back by itself | FusionSolar app/cloud or the grid operator's scheduling overrides it |
 
+| Hint "insulation resistance lower than usual" | Moisture or a damaged cable/connector on the DC side is possible — have it checked by an electrician, especially if it stays |
+| Hint "string X delivers less than usual" | Shading (new tree, snow), dirt or a defective module/connector on that string |
+
 History, daily values and awards live in `/data/huawei2mqtt.db` (SQLite) — keep the `/data` volume when updating.
+Every night a backup is written to `/data/backup/huawei2mqtt-YYYY-MM-DD.db` (the last `BACKUP_KEEP` are kept).
+**Restore:** `docker compose stop`, copy the backup to `data/huawei2mqtt.db` (remove `huawei2mqtt.db-wal`/`-shm` if present), `docker compose up -d`.
+
+**Install as an app:** open the portal via HTTPS on your phone → browser menu → *Add to home screen* / *Install app*.
 
 Set `LOG_LEVEL=DEBUG` for detailed Modbus/MQTT logs (secrets are never logged).
 

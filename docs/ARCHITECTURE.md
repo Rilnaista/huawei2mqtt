@@ -28,6 +28,10 @@ an in-memory cache and a small persistent state:
 | `mqtt.py` | MQTT client: LWT, reconnect with back-off, publish queue, set-topic receiver (ignores retained) |
 | `commands.py` | The three setters: validation, rate limit (1 / 2 s), whitelisted writes, `write_access` tracking |
 | `history.py` | SQLite store (`/data/huawei2mqtt.db`, WAL): 10-s samples, condensed 5-min samples (`samples_5m`), daily values, milestones; buffered writes (commit every 60 s), condensing after `HISTORY_DAYS` (nothing is deleted), bucketed queries across both levels (avg/min/max), MQTT `history/get` |
+| `insights.py` | Pure functions: daily context (ranks, averages, previous year), daily-summary payload, early-warning rules |
+| `daily.py` | Daily jobs: detects end of production, publishes `daily/summary` once per day, runs the warning checks, publishes `warnings` |
+| `backup.py` | Nightly SQLite backup (`Connection.backup`, temp file + rename) with rotation |
+| `export.py` | Streamed CSV export (comma/dot or semicolon/decimal comma, UTF-8 BOM) |
 | `awards.py` | Pure functions: rankings (top 3), milestones, CO₂ and money from the daily values |
 | `api.py` | aiohttp: portal API + static files from `WEB_DIR` |
 | `config.py` | `.env` overlaid by `DATA_DIR/settings.json` (only the editable fields) |
@@ -84,6 +88,9 @@ endpoints return `403`.
 | `GET /api/daily?from=&to=` | – | Daily values (yield, total, peak + time, first/last production, observation flags) |
 | `GET /api/awards` | – | Rankings, milestones, CO₂, money (same JSON as MQTT `…/awards`) |
 | `POST /api/history/clear` | session | `{"scope":"samples"\|"daily"\|"all"}` — clears history only, daily values + milestones, or both |
+| `GET /api/daily/context?date=` | – | Ranks and comparisons for one day (yesterday, same day last year, average day of the month) |
+| `GET /api/export/samples.csv?from=&to=&fields=&sep=` | – | Raw samples of both levels (max. 400 days), streamed |
+| `GET /api/export/daily.csv?from=&to=&sep=` | – | Daily values |
 
 `GET /api/status` additionally contains `poll` (`live_interval_s`, `last_live_at`, `next_live_at`),
 `inverter.dropouts_24h` / `last_dropout` and `history` (`days`, `samples`, `samples_5m`, `oldest`, `detail_oldest`, `db_size_bytes`). `/api/history` additionally returns `resolution_s` (10, 300 or `"mixed"`).
@@ -98,3 +105,12 @@ endpoints return `403`.
 | session secret | Signing key for portal sessions (generated on first start) |
 
 Deleting the volume also deletes history, daily values and awards. Deleting it resets the portal settings to `.env` and the write-access status to "unverified".
+
+## Daily jobs, warnings and backup (1.0.0)
+- End of production = no input power / standby for 30 min after a day with yield; an outage only counts if the
+  last input power before it was < 300 W (the inverter falls asleep in the evening, a dongle outage at noon does not
+  end the day). The summary is sent once per day; the sent date is kept in `state.json`.
+- Warnings compare a daily value with the median of the previous 30 days (at least 7 days of the bridge's own data):
+  insulation resistance (median during production) and the energy share of string 1. Rules in `insights.py`.
+- Backup runs once a day after 03:00 local time (and at start if the last one is older than 26 h).
+- The portal is a PWA: `manifest.webmanifest`, `sw.js` (network first, static shell only, `/api` never cached).
