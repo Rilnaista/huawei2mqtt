@@ -636,4 +636,4 @@ def test_config_rc4_keys():
 
 def test_version():
     import bridge
-    assert bridge.__version__ == "0.4.0"
+    assert bridge.__version__ == "1.0.0"
